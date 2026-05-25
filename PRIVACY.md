@@ -1,0 +1,53 @@
+# iYield privacy policy
+
+Last updated: 2026-05-25.
+
+## Short version
+
+iYield runs entirely on your device. It does not have a backend, does not collect telemetry, does not have user accounts, and does not transmit any personal data to anyone. The only network requests it makes are to Yahoo Finance to fetch the prices and dividend history needed to answer your query.
+
+## What stays on your device
+
+The app stores the following locally, using the operating system's standard `shared_preferences` facility:
+
+- The last ticker you entered.
+- The marginal federal, state, and local tax rates you entered.
+
+This data never leaves your device. You can clear it by uninstalling the app or by clearing app data through your OS settings.
+
+## What gets sent off your device
+
+When you tap **Calculate**, iYield issues a single HTTPS request to:
+
+```
+https://query2.finance.yahoo.com/v8/finance/chart/{TICKER}?interval=1mo&range=1y&events=div
+```
+
+That request goes directly to Yahoo Finance. Yahoo's own privacy and terms apply to that request. iYield does not proxy, log, or aggregate these requests anywhere — there is no iYield server.
+
+The request contains:
+
+- The ticker symbol you typed.
+- A User-Agent header identifying the request as coming from a generic desktop browser (Yahoo's endpoint rejects empty user agents).
+
+It does not contain your tax rates, your name, your device identifier, or anything else that identifies you.
+
+## What we do *not* do
+
+- No analytics SDK, no crash reporting service, no advertising SDK.
+- No third-party tracking.
+- No account creation, no sign-in, no email collection.
+- No facial recognition, no camera, no microphone, no location.
+- No background activity. The app only makes a network request when you tap Calculate.
+
+## Children's privacy
+
+iYield is not directed at children under 13 and does not knowingly collect any data from anyone, including children.
+
+## Contact
+
+Questions about this policy can be sent to the project maintainer through the project's source repository.
+
+## Changes
+
+If this policy changes, the updated version will appear in this file in the project repository with a new "Last updated" date.
