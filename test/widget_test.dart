@@ -35,9 +35,9 @@ void main() {
     await tester.pump();
 
     expect(find.text('Ticker'), findsOneWidget);
-    expect(find.text('Federal marginal rate (%)'), findsOneWidget);
-    expect(find.text('State marginal rate (%)'), findsOneWidget);
-    expect(find.text('Local/city marginal rate (%)'), findsOneWidget);
+    expect(find.text('Federal %'), findsOneWidget);
+    expect(find.text('State %'), findsOneWidget);
+    expect(find.text('Local %'), findsOneWidget);
     // "Calculate" appears as both a tab label and the button label.
     expect(find.text('Calculate'), findsNWidgets(2));
   });
@@ -84,7 +84,7 @@ void main() {
 
     await tester.enterText(find.widgetWithText(TextField, 'Ticker'), 'YMAG');
     await tester.enterText(
-        find.widgetWithText(TextField, 'Federal marginal rate (%)'), 'abc');
+        find.widgetWithText(TextField, 'Federal %'), 'abc');
     await tester.tap(find.widgetWithText(FilledButton, 'Calculate'));
     await tester.pumpAndSettle();
     expect(find.text('Tax rates must be numeric (e.g. 32 for 32%).'),

@@ -455,20 +455,20 @@ class _YieldScreenState extends State<YieldScreen> {
   }
 
   Widget _buildCalculateTab(BuildContext context) {
-    const dense = InputDecoration(
+    const fieldDecoration = InputDecoration(
       border: OutlineInputBorder(),
-      isDense: true,
       contentPadding:
-          EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+          EdgeInsets.symmetric(horizontal: 12, vertical: 16),
     );
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           TextField(
             controller: _tickerCtrl,
-            decoration: dense.copyWith(labelText: 'Ticker'),
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+            decoration: fieldDecoration.copyWith(labelText: 'Ticker'),
             textCapitalization: TextCapitalization.characters,
             autocorrect: false,
             inputFormatters: [
@@ -477,62 +477,64 @@ class _YieldScreenState extends State<YieldScreen> {
               }),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 14),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: TextField(
                   controller: _federalCtrl,
-                  decoration:
-                      dense.copyWith(labelText: 'Federal marginal rate (%)'),
+                  style: const TextStyle(fontSize: 18),
+                  decoration: fieldDecoration.copyWith(labelText: 'Federal %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: TextField(
                   controller: _stateCtrl,
-                  decoration:
-                      dense.copyWith(labelText: 'State marginal rate (%)'),
+                  style: const TextStyle(fontSize: 18),
+                  decoration: fieldDecoration.copyWith(labelText: 'State %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: TextField(
                   controller: _localCtrl,
-                  decoration:
-                      dense.copyWith(labelText: 'Local/city marginal rate (%)'),
+                  style: const TextStyle(fontSize: 18),
+                  decoration: fieldDecoration.copyWith(labelText: 'Local %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 16),
           SizedBox(
-            height: 40,
+            height: 52,
             child: FilledButton(
               onPressed: _loading ? null : _calculate,
               child: _loading
                   ? const SizedBox(
-                      height: 18,
-                      width: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
                     )
-                  : const Text('Calculate'),
+                  : const Text('Calculate',
+                      style: TextStyle(
+                          fontSize: 17, fontWeight: FontWeight.w600)),
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 16),
           if (_error != null)
             Card(
               margin: EdgeInsets.zero,
               color: Theme.of(context).colorScheme.errorContainer,
               child: Padding(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 child: Text(_error!),
               ),
             ),
@@ -591,24 +593,26 @@ class _ResultCard extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Text(r.ticker, style: theme.textTheme.titleLarge),
+                Text(r.ticker, style: theme.textTheme.headlineMedium),
                 _StatusChip(qualifies: true),
               ],
             ),
+            const SizedBox(height: 6),
             Text(
               '${_money(r.currentPrice)} • '
               'TTM distributions ${_money(r.sumDistributions)}',
-              style: theme.textTheme.bodySmall
+              style: theme.textTheme.bodyLarge
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
-            const Divider(height: 16),
+            const Divider(height: 28),
 
             // ─── Hero: the two numbers a yield-investor actually cares about.
             _HeroNumber(
@@ -617,16 +621,16 @@ class _ResultCard extends StatelessWidget {
               value: r.compoundedAfterTaxYield,
               alwaysIndigo: true,
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 14),
             _HeroNumber(
               label: 'Total return after tax',
               sublabel: 'income + price change over 12 months',
               value: r.twrAfterTax,
               alwaysIndigo: false,
             ),
-            const Divider(height: 18),
+            const Divider(height: 28),
 
-            // ─── Detail: all four views in a tight gross/after-tax table.
+            // ─── Detail: all four views in a gross/after-tax table.
             _ViewsTable(result: r),
           ],
         ),
@@ -689,10 +693,10 @@ class _HeroNumber extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(label,
-                  style: theme.textTheme.bodyMedium
+                  style: theme.textTheme.titleMedium
                       ?.copyWith(fontWeight: FontWeight.w600)),
               Text(sublabel,
-                  style: theme.textTheme.bodySmall?.copyWith(
+                  style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant)),
             ],
           ),
@@ -700,7 +704,7 @@ class _HeroNumber extends StatelessWidget {
         const SizedBox(width: 12),
         Text(
           '${(value * 100).toStringAsFixed(2)}%',
-          style: theme.textTheme.headlineSmall?.copyWith(
+          style: theme.textTheme.displaySmall?.copyWith(
               color: color,
               fontWeight: FontWeight.w700,
               fontFeatures: const [FontFeature.tabularFigures()]),
@@ -760,17 +764,17 @@ class _ViewsTable extends StatelessWidget {
           TableRow(
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Text(label, style: theme.textTheme.bodySmall),
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(label, style: theme.textTheme.bodyLarge),
               ),
               Padding(
                 padding:
-                    const EdgeInsets.symmetric(vertical: 3, horizontal: 8),
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
                 child: _PctCell(value: gross, bold: false),
               ),
               Padding(
                 padding:
-                    const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+                    const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
                 child: _PctCell(value: net, bold: true),
               ),
             ],
@@ -798,6 +802,7 @@ class _PctCell extends StatelessWidget {
       textAlign: TextAlign.right,
       style: TextStyle(
         color: color,
+        fontSize: 17,
         fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
         fontFeatures: const [FontFeature.tabularFigures()],
       ),

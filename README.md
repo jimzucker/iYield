@@ -52,6 +52,7 @@ Personal tool, single-developer, not for general distribution.
 - **v2.1** — extracted `YieldMath` as a pure-function class, added a 20-test suite covering the four computations and the UI behavior, wired a pre-commit hook that enforces analyze + test.
 - **v2.2** — result card redesigned to lead with the two most important numbers (after-tax DRIP yield and total return after tax) as large color-coded hero rows, with all four views collapsed into a compact gross/after-tax table below. App is dark-mode only. Positive after-tax returns render green, negative returns red, status as a colored pill at the top of the card.
 - **v2.3** — tightened the form so the entire screen — ticker, three tax rates, Calculate button, and the full result card with all four views — fits on a single iPhone 17 screen with no scrolling. Tax rates are now a 3-column row instead of three stacked fields; hero numbers, table rows, and card padding all shrunk to match.
+- **v2.4** — rebalanced spacing and type scale. Tax-rate labels shortened to "Federal %" / "State %" / "Local %" so they fit cleanly in the 3-column row. Ticker field, hero numbers, and result-card table all got bigger fonts (`displaySmall` for hero values, `titleMedium` for labels, `bodyLarge` for table rows). Padding around the form and inside the card increased so the layout breathes.
 
 See [SESSION_LOG.md](./SESSION_LOG.md) for per-iteration scope and elapsed time.
 
