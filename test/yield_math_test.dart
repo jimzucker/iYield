@@ -37,9 +37,9 @@ void main() {
           DistributionEntry(date: _utc(2025, 7, 15), amount: 1.00),
           DistributionEntry(date: _utc(2026, 1, 15), amount: 1.00),
         ],
-        monthlyCloses: [
+        priceBars: [
           for (int m = 0; m < 13; m++)
-            MonthlyClose(monthStart: _utc(2025, 6 + m), close: 100),
+            PriceBar(date: _utc(2025, 6 + m), close: 100),
         ],
       );
 
@@ -68,9 +68,9 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 7, 15), amount: 10),
         ],
-        monthlyCloses: [
+        priceBars: [
           for (int m = 0; m < 13; m++)
-            MonthlyClose(monthStart: _utc(2025, 6 + m), close: 100),
+            PriceBar(date: _utc(2025, 6 + m), close: 100),
         ],
       );
       expect(result.grossYield, closeTo(0.10, _eps));
@@ -96,10 +96,10 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 12, 15), amount: 5),
         ],
-        monthlyCloses: [
-          MonthlyClose(monthStart: _utc(2025, 6), close: 100),
-          MonthlyClose(monthStart: _utc(2025, 12), close: 90),
-          MonthlyClose(monthStart: _utc(2026, 6), close: 80),
+        priceBars: [
+          PriceBar(date: _utc(2025, 6), close: 100),
+          PriceBar(date: _utc(2025, 12), close: 90),
+          PriceBar(date: _utc(2026, 6), close: 80),
         ],
       );
       expect(result.grossYield, closeTo(5 / 80, _eps));
@@ -121,10 +121,10 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 12, 15), amount: 5),
         ],
-        monthlyCloses: [
-          MonthlyClose(monthStart: _utc(2025, 6), close: 80),
-          MonthlyClose(monthStart: _utc(2025, 12), close: 90),
-          MonthlyClose(monthStart: _utc(2026, 6), close: 100),
+        priceBars: [
+          PriceBar(date: _utc(2025, 6), close: 80),
+          PriceBar(date: _utc(2025, 12), close: 90),
+          PriceBar(date: _utc(2026, 6), close: 100),
         ],
       );
       expect(result.compoundedGrossYield, greaterThan(result.grossYield));
@@ -144,10 +144,10 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 12, 15), amount: 6),
         ],
-        monthlyCloses: [
-          MonthlyClose(monthStart: _utc(2025, 6), close: 100),
-          MonthlyClose(monthStart: _utc(2025, 12), close: 120),
-          MonthlyClose(monthStart: _utc(2026, 6), close: 80),
+        priceBars: [
+          PriceBar(date: _utc(2025, 6), close: 100),
+          PriceBar(date: _utc(2025, 12), close: 120),
+          PriceBar(date: _utc(2026, 6), close: 80),
         ],
       );
       expect(result.avgPriceGrossYield, closeTo(6 / 100, _eps));
@@ -165,9 +165,9 @@ void main() {
           DistributionEntry(date: _utc(2026, 1, 15), amount: 1),
           DistributionEntry(date: _utc(2025, 10, 15), amount: 1),
         ],
-        monthlyCloses: [
+        priceBars: [
           for (int m = 0; m < 13; m++)
-            MonthlyClose(monthStart: _utc(2025, 6 + m), close: 100),
+            PriceBar(date: _utc(2025, 6 + m), close: 100),
         ],
       );
       expect(result.distributions.first.date, _utc(2026, 1, 15));
@@ -178,7 +178,7 @@ void main() {
       // Real YMAG response captured 2026-05-25:
       //  - current price $12.79
       //  - 13 distributions summing to $2.0050
-      //  - 13 monthly closes ranging $11.95 → $15.71
+      //  - 13 price bars ranging $11.95 → $15.71
       // Combined rate 37% (federal 32, state 5, local 0).
       //
       // Expected values were re-derived from the same input by an independent
@@ -205,7 +205,7 @@ void main() {
           DistributionEntry(amount: 0.1620, date: _ymagTs(2025, 8, 14)),
           DistributionEntry(amount: 0.1530, date: _ymagTs(2026, 5, 20)),
         ],
-        monthlyCloses: _ymagMonthlyCloses,
+        priceBars: _ymagPriceBars,
       );
       expect(result.qualifies, isTrue);
       expect(result.sumDistributions, closeTo(2.0050, 1e-6));
@@ -223,8 +223,8 @@ void main() {
   group('YieldMath.compute — non-qualifying / edge cases', () {
     test('no distributions → does not qualify, prices preserved', () {
       final closes = [
-        MonthlyClose(monthStart: _utc(2025, 6), close: 100),
-        MonthlyClose(monthStart: _utc(2026, 5), close: 110),
+        PriceBar(date: _utc(2025, 6), close: 100),
+        PriceBar(date: _utc(2026, 5), close: 110),
       ];
       final result = YieldMath.compute(
         ticker: 'BRK-B',
@@ -233,7 +233,7 @@ void main() {
         statePct: 5,
         localPct: 0,
         distributions: const [],
-        monthlyCloses: closes,
+        priceBars: closes,
       );
       expect(result.qualifies, isFalse);
       expect(result.reason,
@@ -243,11 +243,11 @@ void main() {
       expect(result.compoundedGrossYield, 0);
       expect(result.twrGross, 0);
       // Prices are still surfaced for the Prices tab.
-      expect(result.monthlyCloses.length, closes.length);
+      expect(result.priceBars.length, closes.length);
       expect(result.distributions, isEmpty);
     });
 
-    test('all monthly closes null → falls back to currentPrice for DRIP', () {
+    test('all price-bar closes null → falls back to currentPrice for DRIP', () {
       final result = YieldMath.compute(
         ticker: 'NULLPRICES',
         currentPrice: 50,
@@ -257,9 +257,9 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 12, 15), amount: 5),
         ],
-        monthlyCloses: [
-          MonthlyClose(monthStart: _utc(2025, 6), close: null),
-          MonthlyClose(monthStart: _utc(2026, 5), close: null),
+        priceBars: [
+          PriceBar(date: _utc(2025, 6), close: null),
+          PriceBar(date: _utc(2026, 5), close: null),
         ],
       );
       // DRIP falls back to currentPrice (50), so factor = 1 + 5/50 = 1.10.
@@ -280,8 +280,8 @@ void main() {
         distributions: [
           DistributionEntry(date: _utc(2025, 12, 15), amount: 4),
         ],
-        monthlyCloses: [
-          MonthlyClose(monthStart: _utc(2025, 12), close: 100),
+        priceBars: [
+          PriceBar(date: _utc(2025, 12), close: 100),
         ],
       );
       expect(result.grossYield, closeTo(0.04, _eps));
@@ -297,9 +297,9 @@ void main() {
     });
     test('barIndexAt picks latest bar on or before the date', () {
       final bars = [
-        MonthlyClose(monthStart: _utc(2025, 6), close: 1),
-        MonthlyClose(monthStart: _utc(2025, 9), close: 2),
-        MonthlyClose(monthStart: _utc(2025, 12), close: 3),
+        PriceBar(date: _utc(2025, 6), close: 1),
+        PriceBar(date: _utc(2025, 9), close: 2),
+        PriceBar(date: _utc(2025, 12), close: 3),
       ];
       expect(YieldMath.barIndexAt(_utc(2025, 5), bars), -1);
       expect(YieldMath.barIndexAt(_utc(2025, 6), bars), 0);
@@ -309,9 +309,9 @@ void main() {
     });
     test('priceAt walks back through null closes', () {
       final bars = [
-        MonthlyClose(monthStart: _utc(2025, 6), close: 10),
-        MonthlyClose(monthStart: _utc(2025, 9), close: null),
-        MonthlyClose(monthStart: _utc(2025, 12), close: null),
+        PriceBar(date: _utc(2025, 6), close: 10),
+        PriceBar(date: _utc(2025, 9), close: null),
+        PriceBar(date: _utc(2025, 12), close: null),
       ];
       expect(YieldMath.priceAt(_utc(2025, 12, 15), bars), 10);
     });
@@ -322,23 +322,24 @@ void main() {
 DateTime _ymagTs(int y, int m, int d) =>
     DateTime.utc(y, m, d, 13, 30);
 
-// Monthly bar timestamps from Yahoo are first-of-month at ~04:00 UTC.
+// Bar timestamps from the original 1mo YMAG capture are first-of-month at ~04:00 UTC.
+// Kept monthly-shaped: math is bar-shape agnostic so this still proves correctness.
 DateTime _ymagBar(int y, int m) => DateTime.utc(y, m, 1, 4, 0);
 
-// Monthly closes from the real YMAG response captured 2026-05-25.
+// Price bars from the real YMAG response captured 2026-05-25.
 // 13 bars: 12 month-starts plus a partial-current-month bar.
-final List<MonthlyClose> _ymagMonthlyCloses = [
-  MonthlyClose(monthStart: _ymagBar(2025, 6), close: 15.25),
-  MonthlyClose(monthStart: _ymagBar(2025, 7), close: 15.44),
-  MonthlyClose(monthStart: _ymagBar(2025, 8), close: 15.24),
-  MonthlyClose(monthStart: _ymagBar(2025, 9), close: 15.71),
-  MonthlyClose(monthStart: _ymagBar(2025, 10), close: 15.39),
-  MonthlyClose(monthStart: _ymagBar(2025, 11), close: 14.64),
-  MonthlyClose(monthStart: _ymagBar(2025, 12), close: 14.23),
-  MonthlyClose(monthStart: _ymagBar(2026, 1), close: 13.95),
-  MonthlyClose(monthStart: _ymagBar(2026, 2), close: 12.81),
-  MonthlyClose(monthStart: _ymagBar(2026, 3), close: 11.95),
-  MonthlyClose(monthStart: _ymagBar(2026, 4), close: 12.80),
-  MonthlyClose(monthStart: _ymagBar(2026, 5), close: 12.79),
-  MonthlyClose(monthStart: DateTime.utc(2026, 5, 22, 20), close: 12.79),
+final List<PriceBar> _ymagPriceBars = [
+  PriceBar(date: _ymagBar(2025, 6), close: 15.25),
+  PriceBar(date: _ymagBar(2025, 7), close: 15.44),
+  PriceBar(date: _ymagBar(2025, 8), close: 15.24),
+  PriceBar(date: _ymagBar(2025, 9), close: 15.71),
+  PriceBar(date: _ymagBar(2025, 10), close: 15.39),
+  PriceBar(date: _ymagBar(2025, 11), close: 14.64),
+  PriceBar(date: _ymagBar(2025, 12), close: 14.23),
+  PriceBar(date: _ymagBar(2026, 1), close: 13.95),
+  PriceBar(date: _ymagBar(2026, 2), close: 12.81),
+  PriceBar(date: _ymagBar(2026, 3), close: 11.95),
+  PriceBar(date: _ymagBar(2026, 4), close: 12.80),
+  PriceBar(date: _ymagBar(2026, 5), close: 12.79),
+  PriceBar(date: DateTime.utc(2026, 5, 22, 20), close: 12.79),
 ];

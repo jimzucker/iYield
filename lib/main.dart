@@ -51,10 +51,10 @@ class DistributionEntry {
   const DistributionEntry({required this.date, required this.amount});
 }
 
-class MonthlyClose {
-  final DateTime monthStart;
+class PriceBar {
+  final DateTime date;
   final double? close;
-  const MonthlyClose({required this.monthStart, required this.close});
+  const PriceBar({required this.date, required this.close});
 }
 
 class YieldResult {
@@ -67,14 +67,14 @@ class YieldResult {
   // 2) Compounded DRIP: prod(1 + d_t / P_t) - 1
   final double compoundedGrossYield;
   final double compoundedAfterTaxYield;
-  // 3) Average-price denominator: sum(dist) / mean(monthly_closes)
+  // 3) Average-price denominator: sum(dist) / mean(bar_closes)
   final double avgPriceGrossYield;
   final double avgPriceAfterTaxYield;
   // 4) TWR including price changes: prod(1 + (P_{t+1} + d_t) / P_t - 1) - 1
   final double twrGross;
   final double twrAfterTax;
   final List<DistributionEntry> distributions;
-  final List<MonthlyClose> monthlyCloses;
+  final List<PriceBar> priceBars;
   final bool qualifies;
   final String? reason;
 
@@ -91,7 +91,7 @@ class YieldResult {
     required this.twrGross,
     required this.twrAfterTax,
     required this.distributions,
-    required this.monthlyCloses,
+    required this.priceBars,
     required this.qualifies,
     this.reason,
   });
@@ -100,7 +100,7 @@ class YieldResult {
     required String ticker,
     required double currentPrice,
     required String reason,
-    List<MonthlyClose> monthlyCloses = const [],
+    List<PriceBar> priceBars = const [],
   }) {
     return YieldResult(
       ticker: ticker,
@@ -115,7 +115,7 @@ class YieldResult {
       twrGross: 0,
       twrAfterTax: 0,
       distributions: const [],
-      monthlyCloses: monthlyCloses,
+      priceBars: priceBars,
       qualifies: false,
       reason: reason,
     );
@@ -132,17 +132,17 @@ class YieldMath {
     required double statePct,
     required double localPct,
     required List<DistributionEntry> distributions,
-    required List<MonthlyClose> monthlyCloses,
+    required List<PriceBar> priceBars,
   }) {
-    final sortedCloses = [...monthlyCloses]
-      ..sort((a, b) => a.monthStart.compareTo(b.monthStart));
+    final sortedCloses = [...priceBars]
+      ..sort((a, b) => a.date.compareTo(b.date));
 
     if (distributions.isEmpty) {
       return YieldResult.doesNotQualify(
         ticker: ticker,
         currentPrice: currentPrice,
         reason: 'no distributions in last 12 months',
-        monthlyCloses: sortedCloses,
+        priceBars: sortedCloses,
       );
     }
 
@@ -207,19 +207,19 @@ class YieldMath {
       twrGross: twrFactorGross - 1,
       twrAfterTax: twrFactorNet - 1,
       distributions: descDist,
-      monthlyCloses: sortedCloses,
+      priceBars: sortedCloses,
       qualifies: true,
     );
   }
 
-  /// Index of the latest bar whose monthStart is on or before [divDate].
+  /// Index of the latest bar whose date is on or before [divDate].
   /// Returns -1 if [bars] is empty or every bar starts after [divDate].
   @visibleForTesting
-  static int barIndexAt(DateTime divDate, List<MonthlyClose> bars) {
+  static int barIndexAt(DateTime divDate, List<PriceBar> bars) {
     if (bars.isEmpty) return -1;
     int idx = -1;
     for (int i = 0; i < bars.length; i++) {
-      if (!bars[i].monthStart.isAfter(divDate)) {
+      if (!bars[i].date.isAfter(divDate)) {
         idx = i;
       } else {
         break;
@@ -233,7 +233,7 @@ class YieldMath {
   /// first available bar's close. Returns null only when no bar in the entire
   /// list has a non-null close.
   @visibleForTesting
-  static double? priceAt(DateTime divDate, List<MonthlyClose> bars) {
+  static double? priceAt(DateTime divDate, List<PriceBar> bars) {
     if (bars.isEmpty) return null;
     final idx = barIndexAt(divDate, bars);
     final start = idx >= 0 ? idx : 0;
@@ -353,7 +353,7 @@ class _YieldScreenState extends State<YieldScreen> {
     required double localPct,
   }) async {
     final uri = Uri.parse(
-        'https://query2.finance.yahoo.com/v8/finance/chart/$ticker?interval=1mo&range=1y&events=div');
+        'https://query2.finance.yahoo.com/v8/finance/chart/$ticker?interval=1d&range=1y&events=div');
     final resp = await http.get(uri, headers: {
       'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
@@ -387,10 +387,10 @@ class _YieldScreenState extends State<YieldScreen> {
             as List<dynamic>? ??
         const [];
 
-    final monthlyCloses = <MonthlyClose>[
+    final priceBars = <PriceBar>[
       for (int i = 0; i < timestamps.length; i++)
-        MonthlyClose(
-          monthStart: DateTime.fromMillisecondsSinceEpoch(
+        PriceBar(
+          date: DateTime.fromMillisecondsSinceEpoch(
               timestamps[i] * 1000,
               isUtc: true),
           close: (i < closes.length && closes[i] is num)
@@ -422,7 +422,7 @@ class _YieldScreenState extends State<YieldScreen> {
       statePct: statePct,
       localPct: localPct,
       distributions: distributionList,
-      monthlyCloses: monthlyCloses,
+      priceBars: priceBars,
     );
   }
 
@@ -816,14 +816,6 @@ String _fmtDate(DateTime d) {
   return '${d.year}-$m-$day';
 }
 
-String _fmtMonth(DateTime d) {
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  return '${months[d.month - 1]} ${d.year}';
-}
-
 class _DistributionsTab extends StatelessWidget {
   final YieldResult? result;
   const _DistributionsTab({required this.result});
@@ -948,13 +940,13 @@ class _PricesTab extends StatelessWidget {
         ),
       );
     }
-    final closes = [...r.monthlyCloses]
-      ..sort((a, b) => b.monthStart.compareTo(a.monthStart));
+    final closes = [...r.priceBars]
+      ..sort((a, b) => b.date.compareTo(a.date));
     if (closes.isEmpty) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: Text('No monthly closes returned.',
+          child: Text('No daily closes returned.',
               textAlign: TextAlign.center),
         ),
       );
@@ -973,8 +965,8 @@ class _PricesTab extends StatelessWidget {
     final lo = valid.isEmpty
         ? 0
         : valid.reduce((a, b) => a < b ? a : b);
-    final last = closes.first.monthStart;
-    final first = closes.last.monthStart;
+    final last = closes.first.date;
+    final first = closes.last.date;
     final pctChange = (valid.length >= 2)
         ? (valid.first - valid.last) / valid.last * 100
         : 0;
@@ -992,8 +984,8 @@ class _PricesTab extends StatelessWidget {
                 Text(r.ticker, style: theme.textTheme.titleLarge),
                 const SizedBox(height: 4),
                 Text(
-                  '${closes.length} monthly closes • '
-                  '${_fmtMonth(first)} → ${_fmtMonth(last)}',
+                  '${closes.length} daily closes • '
+                  '${_fmtDate(first)} → ${_fmtDate(last)}',
                   style: theme.textTheme.bodyMedium,
                 ),
                 Text(
@@ -1014,7 +1006,7 @@ class _PricesTab extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Month',
+                Text('Date',
                     style: theme.textTheme.labelLarge
                         ?.copyWith(fontWeight: FontWeight.w600)),
                 Text('Close',
@@ -1030,7 +1022,7 @@ class _PricesTab extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_fmtMonth(c.monthStart)),
+              Text(_fmtDate(c.date)),
               Text(c.close == null
                   ? '—'
                   : '\$${c.close!.toStringAsFixed(2)}'),
