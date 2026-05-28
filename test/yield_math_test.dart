@@ -348,7 +348,7 @@ void main() {
               '${money(r.startPrice).padLeft(12)}${money(r.currentPrice).padLeft(13)}')
           ..writeln('${'  Shares'.padRight(28)}'
               '${'1.00'.padLeft(12)}${r.dripShares.toStringAsFixed(2).padLeft(13)}')
-          ..writeln('${'  NAV'.padRight(28)}'
+          ..writeln('${'  Present Value'.padRight(28)}'
               '${money(r.startPrice).padLeft(12)}${money(r.nav).padLeft(13)}')
           ..writeln('${'  Cost basis'.padRight(28)}'
               '${money(r.startPrice).padLeft(12)}${money(r.costBasis).padLeft(13)}')

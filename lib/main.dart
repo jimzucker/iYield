@@ -296,6 +296,7 @@ class _YieldScreenState extends State<YieldScreen> {
   final _stateCtrl = TextEditingController();
   final _localCtrl = TextEditingController(text: '0');
   final _rocCtrl = TextEditingController(text: '71');
+  final _scrollCtrl = ScrollController();
 
   bool _loading = false;
   String? _error;
@@ -340,6 +341,7 @@ class _YieldScreenState extends State<YieldScreen> {
     _stateCtrl.dispose();
     _localCtrl.dispose();
     _rocCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
@@ -397,6 +399,16 @@ class _YieldScreenState extends State<YieldScreen> {
       setState(() {
         _result = result;
         _loading = false;
+      });
+      // Slide the inputs up so the full result card (through the reference
+      // grid) is in view without the user scrolling.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scrollCtrl.hasClients) return;
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeOut,
+        );
       });
     } catch (e) {
       setState(() {
@@ -523,6 +535,7 @@ class _YieldScreenState extends State<YieldScreen> {
           EdgeInsets.symmetric(horizontal: 12, vertical: 16),
     );
     return SingleChildScrollView(
+      controller: _scrollCtrl,
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -537,14 +550,12 @@ class _YieldScreenState extends State<YieldScreen> {
                   style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w700,
-                      color: Theme.of(context).colorScheme.primary),
+                      letterSpacing: 0.5,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer),
                   decoration: fieldDecoration.copyWith(
                     labelText: 'Ticker',
                     filled: true,
-                    fillColor: Theme.of(context)
-                        .colorScheme
-                        .primary
-                        .withValues(alpha: 0.10),
+                    fillColor: Theme.of(context).colorScheme.primaryContainer,
                   ),
                   textCapitalization: TextCapitalization.characters,
                   autocorrect: false,
@@ -704,30 +715,15 @@ class _ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // The entered ticker is highlighted in the input field above, so we
-            // don't repeat it here — we lead with TTM distributions instead.
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('TTM distributions',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant)),
-                    Text(_money(r.sumDistributions),
-                        style: theme.textTheme.headlineMedium
-                            ?.copyWith(fontWeight: FontWeight.w700)),
-                  ],
-                ),
-                _StatusChip(qualifies: true),
-              ],
+            // The entered ticker is highlighted in the input field above and the
+            // current price shows in the yield lines + reference grid, so the
+            // header is just the headline TTM distributions figure.
+            _StmtRow(
+              label: 'TTM distributions',
+              sub: 'reinvested via DRIP',
+              value: _money(r.sumDistributions),
+              headline: true,
             ),
-            const SizedBox(height: 4),
-            Text('${_money(r.currentPrice)} per share',
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             const Divider(height: 28),
 
             // ─── BLUF: total return after tax, with the three components that
@@ -742,7 +738,8 @@ class _ResultCard extends StatelessWidget {
             const SizedBox(height: 10),
             _StmtRow(
               label: 'Income (taxable)',
-              sub: 'distribution income you earned',
+              sub: '${_money(r.sumDistributions)} × '
+                  '${(100 - r.rocPct).toStringAsFixed(0)}% (1−ROC)',
               value: _signedMoney(r.incomeAmount),
               valueColor: _gain,
               nested: true,
@@ -926,38 +923,32 @@ class _ReferenceGrid extends StatelessWidget {
       ]);
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Table(
+      columnWidths: const {
+        0: FlexColumnWidth(2),
+        1: IntrinsicColumnWidth(),
+        2: IntrinsicColumnWidth(),
+      },
+      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
       children: [
-        Text('Reference', style: headStyle),
-        const SizedBox(height: 6),
-        Table(
-          columnWidths: const {
-            0: FlexColumnWidth(2),
-            1: IntrinsicColumnWidth(),
-            2: IntrinsicColumnWidth(),
-          },
-          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-          children: [
-            TableRow(children: [
-              const SizedBox(),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Text(startLabel,
-                    textAlign: TextAlign.right, style: headStyle),
-              ),
-              Text(endLabel, textAlign: TextAlign.right, style: headStyle),
-            ]),
-            row('Price', _money(r.startPrice), _money(r.currentPrice)),
-            row('Shares', '1.00', r.dripShares.toStringAsFixed(2)),
-            row('Value (price × shares)', _money(r.startPrice), _money(r.nav)),
-            row('Cost basis', _money(r.startPrice), _money(r.costBasis)),
-            row('Unrealized G/L', '—', _signedMoney(r.unrealizedGL),
-                endColor: r.unrealizedGL < 0
-                    ? Colors.redAccent.shade200
-                    : Colors.greenAccent.shade400),
-          ],
-        ),
+        TableRow(children: [
+          const SizedBox(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Text(startLabel,
+                textAlign: TextAlign.right, style: headStyle),
+          ),
+          Text(endLabel, textAlign: TextAlign.right, style: headStyle),
+        ]),
+        row('Price', _money(r.startPrice), _money(r.currentPrice)),
+        row('Shares', '1.00', r.dripShares.toStringAsFixed(2)),
+        row('Present Value (price × shares)', _money(r.startPrice),
+            _money(r.nav)),
+        row('Cost basis', _money(r.startPrice), _money(r.costBasis)),
+        row('Unrealized G/L', '—', _signedMoney(r.unrealizedGL),
+            endColor: r.unrealizedGL < 0
+                ? Colors.redAccent.shade200
+                : Colors.greenAccent.shade400),
       ],
     );
   }
