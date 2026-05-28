@@ -24,10 +24,29 @@ const _eps = 1e-9;
 
 DateTime _utc(int y, int m, [int d = 1]) => DateTime.utc(y, m, d);
 
+// Re-derives the broker-DRIP + ROC fields from primitives so each fixture test
+// guards that the published fields stay internally consistent (independent of
+// the absolute magic numbers asserted alongside).
+void _expectInvariants(YieldResult r, {required double rocPct}) {
+  final incomeFrac = 1 - rocPct / 100;
+  expect(r.dripShares, closeTo(r.compoundedGrossYield + 1, _eps));
+  expect(r.nav, closeTo(r.dripShares * r.currentPrice, _eps));
+  expect(r.incomeAmount, closeTo(r.sumDistributions * incomeFrac, 1e-9));
+  expect(r.taxThisYear, closeTo(r.incomeAmount * r.combinedRate, _eps));
+  expect(r.costBasis, closeTo(r.startPrice + r.incomeAmount, _eps));
+  expect(r.unrealizedGL, closeTo(r.nav - r.costBasis, _eps));
+  expect(r.afterTaxYieldRoc,
+      closeTo((r.sumDistributions - r.taxThisYear) / r.currentPrice, _eps));
+  expect(r.totalReturnBeforeTax,
+      closeTo((r.nav - r.startPrice) / r.startPrice, _eps));
+  expect(r.totalReturnAfterTax,
+      closeTo((r.nav - r.taxThisYear - r.startPrice) / r.startPrice, _eps));
+}
+
 void main() {
   group('YieldMath.compute — qualifying paths', () {
     test('simple two-distribution case at flat price, zero tax', () {
-      // Flat $100 price, two $1 distributions → simple TTM 2%, DRIP slightly
+      // Flat $100 price, two $1 distributions → advertised 2%, DRIP slightly
       // higher because each $1 buys 0.01 share at $100 and the second
       // distribution compounds on top.
       final result = YieldMath.compute(
@@ -49,20 +68,19 @@ void main() {
       expect(result.qualifies, isTrue);
       expect(result.sumDistributions, closeTo(2.00, _eps));
       expect(result.grossYield, closeTo(0.02, _eps));
-      expect(result.afterTaxYield, closeTo(0.02, _eps));
       expect(result.compoundedGrossYield,
           closeTo((1 + 0.01) * (1 + 0.01) - 1, _eps));
-      expect(result.compoundedGrossYield,
-          greaterThan(result.grossYield));
-      expect(result.avgPriceGrossYield, closeTo(0.02, _eps));
-      // TWR at flat price with $2 of distributions ≈ 2.0001%
-      // (only the dist-bearing months contribute; sum > simple because
-      // distributions compound across two non-adjacent months).
-      expect(result.twrGross, greaterThan(0));
+      expect(result.compoundedGrossYield, greaterThan(result.grossYield));
+      expect(result.dripShares, closeTo((1 + 0.01) * (1 + 0.01), _eps));
+      // Flat price + DRIP: the only "gain" is the compounding of reinvested
+      // distributions — 1.0201 shares × $100 − $102 basis = $0.01.
+      expect(result.unrealizedGL, closeTo(0.01, 1e-9));
+      expect(result.totalReturnBeforeTax, closeTo(0.0201, _eps));
     });
 
-    test('after-tax yield is gross × (1 − combined rate)', () {
-      final result = YieldMath.compute(
+    test('after-tax yield honours the ROC split', () {
+      // rocPct 0 → whole distribution is taxable income.
+      final allIncome = YieldMath.compute(
         ticker: 'TAX',
         currentPrice: 100,
         federalPct: 32,
@@ -76,20 +94,33 @@ void main() {
             PriceBar(date: _utc(2025, 6 + m), close: 100),
         ],
       );
-      expect(result.grossYield, closeTo(0.10, _eps));
-      expect(result.afterTaxYield, closeTo(0.10 * 0.63, _eps));
-      expect(result.avgPriceAfterTaxYield, closeTo(0.10 * 0.63, _eps));
-      // DRIP after-tax shaves the distribution by the same factor.
-      expect(result.compoundedAfterTaxYield,
-          closeTo(result.compoundedGrossYield * 0.63, _eps));
+      expect(allIncome.grossYield, closeTo(0.10, _eps));
+      expect(allIncome.afterTaxYieldRoc, closeTo(0.10 * 0.63, _eps));
+      expect(allIncome.taxThisYear, closeTo(10 * 0.37, _eps));
+
+      // rocPct 100 → return of capital, nothing taxed now.
+      final allRoc = YieldMath.compute(
+        ticker: 'TAX',
+        currentPrice: 100,
+        federalPct: 32,
+        statePct: 5,
+        localPct: 0,
+        distributions: [
+          DistributionEntry(date: _utc(2025, 7, 15), amount: 10),
+        ],
+        priceBars: [
+          for (int m = 0; m < 13; m++)
+            PriceBar(date: _utc(2025, 6 + m), close: 100),
+        ],
+        rocPct: 100,
+      );
+      expect(allRoc.taxThisYear, closeTo(0, _eps));
+      expect(allRoc.afterTaxYieldRoc, closeTo(allRoc.grossYield, _eps));
     });
 
-    test('price drop → DRIP < simple, TWR negative when payouts < price loss',
-        () {
-      // Price drops from 100 → 80, single $5 distribution at mid-period.
-      // Simple TTM: 5 / 80 = 6.25%
-      // DRIP at mid-price (say 90): (1 + 5/90) - 1 ≈ 5.56% < simple
-      // TWR roughly (80 + 5) / 100 - 1 = -15%
+    test('price drop → DRIP < advertised, total return negative', () {
+      // Price drops 100 → 80, single $5 distribution at mid-period (price 90).
+      // DRIP shares = 1 + 5/90; NAV = shares × 80 < 100 start.
       final result = YieldMath.compute(
         ticker: 'DROP',
         currentPrice: 80,
@@ -108,13 +139,11 @@ void main() {
       expect(result.grossYield, closeTo(5 / 80, _eps));
       expect(result.compoundedGrossYield, lessThan(result.grossYield));
       expect(result.compoundedGrossYield, closeTo(5 / 90, _eps));
-      expect(result.twrGross, lessThan(0));
+      expect(result.totalReturnBeforeTax, lessThan(0));
     });
 
-    test('price rise → DRIP > simple', () {
-      // Price rises from 80 → 100, single $5 distribution at mid-period.
-      // Simple TTM: 5 / 100 = 5%
-      // DRIP at mid-price (90): 5 / 90 ≈ 5.56% > simple
+    test('price rise → DRIP > advertised, total return positive', () {
+      // Price rises 80 → 100, single $5 distribution at mid-period (price 90).
       final result = YieldMath.compute(
         ticker: 'RISE',
         currentPrice: 100,
@@ -132,28 +161,8 @@ void main() {
       );
       expect(result.compoundedGrossYield, greaterThan(result.grossYield));
       expect(result.compoundedGrossYield, closeTo(5 / 90, _eps));
-      // Total return: 100/80 - 1 = 25% plus distribution -> positive.
-      expect(result.twrGross, greaterThan(0));
-    });
-
-    test('average-price denominator equals sum / mean(closes)', () {
-      // Closes: 100, 120, 80 → mean = 100.
-      final result = YieldMath.compute(
-        ticker: 'AVG',
-        currentPrice: 80,
-        federalPct: 0,
-        statePct: 0,
-        localPct: 0,
-        distributions: [
-          DistributionEntry(date: _utc(2025, 12, 15), amount: 6),
-        ],
-        priceBars: [
-          PriceBar(date: _utc(2025, 6), close: 100),
-          PriceBar(date: _utc(2025, 12), close: 120),
-          PriceBar(date: _utc(2026, 6), close: 80),
-        ],
-      );
-      expect(result.avgPriceGrossYield, closeTo(6 / 100, _eps));
+      // NAV = (1 + 5/90) × 100 vs 80 start → positive.
+      expect(result.totalReturnBeforeTax, greaterThan(0));
     });
 
     test('distributions list returned newest first', () {
@@ -177,16 +186,9 @@ void main() {
       expect(result.distributions.last.date, _utc(2025, 7, 15));
     });
 
-    test('YMAG-like fixture matches pre-computed expected values', () {
-      // Real YMAG response captured 2026-05-25:
-      //  - current price $12.79
-      //  - 13 distributions summing to $2.0050
-      //  - 13 price bars ranging $11.95 → $15.71
-      // Combined rate 37% (federal 32, state 5, local 0).
-      //
-      // Expected values were re-derived from the same input by an independent
-      // Python reference implementation, so they assert the algorithm's
-      // numerical output rather than a number we hand-edited.
+    test('YMAG-like monthly fixture matches pre-computed expected values', () {
+      // Real YMAG response captured 2026-05-25, monthly bars. Combined rate 37%
+      // (federal 32, state 5, local 0); rocPct 71 (YMAG is ~71% ROC).
       final result = YieldMath.compute(
         ticker: 'YMAG',
         currentPrice: 12.79,
@@ -209,22 +211,25 @@ void main() {
           DistributionEntry(amount: 0.1530, date: _ymagTs(2026, 5, 20)),
         ],
         priceBars: _ymagPriceBars,
+        rocPct: 71,
       );
       expect(result.qualifies, isTrue);
       expect(result.sumDistributions, closeTo(2.0050, 1e-6));
       expect(result.grossYield, closeTo(0.156763, 1e-5));
-      expect(result.afterTaxYield, closeTo(0.098761, 1e-5));
       expect(result.compoundedGrossYield, closeTo(0.141274, 1e-5));
-      expect(result.compoundedAfterTaxYield, closeTo(0.087011, 1e-5));
-      expect(result.avgPriceGrossYield, closeTo(0.142439, 1e-5));
-      expect(result.avgPriceAfterTaxYield, closeTo(0.089737, 1e-5));
-      expect(result.twrGross, closeTo(-0.062668, 1e-5));
-      expect(result.twrAfterTax, closeTo(-0.100041, 1e-5));
+      expect(result.startPrice, closeTo(15.25, 1e-9));
+      // ROC-aware position economics (rocPct 71). Price fell 15.25 → 12.79, so
+      // the position is underwater here even after DRIP.
+      expect(result.incomeAmount, closeTo(0.581450, 1e-5));
+      expect(result.taxThisYear, closeTo(0.215137, 1e-5));
+      expect(result.costBasis, closeTo(15.831450, 1e-5));
+      expect(result.unrealizedGL, closeTo(-1.234560, 1e-5));
+      expect(result.totalReturnAfterTax, closeTo(-0.056937, 1e-5));
+      _expectInvariants(result, rocPct: 71);
     });
 
     // Live daily-bar fixtures captured 2026-05-27. Expected values produced by
-    // an independent Python port of YieldMath.compute (see tools/yield_ref.py)
-    // over the same Yahoo JSON the fixture files were derived from.
+    // an independent Python port of YieldMath.compute (see tools/yield_ref.py).
     test('YMAG daily-bar fixture (2026-05-27) matches reference', () {
       final result = YieldMath.compute(
         ticker: 'YMAG',
@@ -234,17 +239,25 @@ void main() {
         localPct: 0,
         distributions: ymag_daily.kYMAGDistributions,
         priceBars: ymag_daily.kYMAGPriceBars,
+        rocPct: 71,
       );
       expect(result.qualifies, isTrue);
       expect(result.sumDistributions, closeTo(6.5590, 1e-4));
       expect(result.grossYield, closeTo(0.511622, 1e-5));
-      expect(result.afterTaxYield, closeTo(0.322322, 1e-5));
       expect(result.compoundedGrossYield, closeTo(0.573860, 1e-5));
-      expect(result.compoundedAfterTaxYield, closeTo(0.331414, 1e-5));
-      expect(result.avgPriceGrossYield, closeTo(0.458181, 1e-5));
-      expect(result.avgPriceAfterTaxYield, closeTo(0.288654, 1e-5));
-      expect(result.twrGross, closeTo(0.292988, 1e-5));
-      expect(result.twrAfterTax, closeTo(0.093418, 1e-5));
+      // ROC-aware economics (rocPct 71): basis cut by ROC leaves an unrealized
+      // gain even though the price fell — see roc-cost-basis-and-gl.
+      expect(result.startPrice, closeTo(15.620000, 1e-5));
+      expect(result.dripShares, closeTo(1.573860, 1e-5));
+      expect(result.incomeAmount, closeTo(1.902110, 1e-5));
+      expect(result.taxThisYear, closeTo(0.703781, 1e-5));
+      expect(result.nav, closeTo(20.176884, 1e-5));
+      expect(result.costBasis, closeTo(17.522110, 1e-5));
+      expect(result.unrealizedGL, closeTo(2.654774, 1e-5));
+      expect(result.afterTaxYieldRoc, closeTo(0.456725, 1e-5));
+      expect(result.totalReturnBeforeTax, closeTo(0.291734, 1e-5));
+      expect(result.totalReturnAfterTax, closeTo(0.246678, 1e-5));
+      _expectInvariants(result, rocPct: 71);
     });
 
     test('TQQQ daily-bar fixture (2026-05-27) matches reference', () {
@@ -256,17 +269,95 @@ void main() {
         localPct: 0,
         distributions: kTQQQDistributions,
         priceBars: kTQQQPriceBars,
+        rocPct: 0,
       );
       expect(result.qualifies, isTrue);
       expect(result.sumDistributions, closeTo(0.3160, 1e-4));
       expect(result.grossYield, closeTo(0.003869, 1e-5));
-      expect(result.afterTaxYield, closeTo(0.002438, 1e-5));
       expect(result.compoundedGrossYield, closeTo(0.006937, 1e-5));
-      expect(result.compoundedAfterTaxYield, closeTo(0.004366, 1e-5));
-      expect(result.avgPriceGrossYield, closeTo(0.006218, 1e-5));
-      expect(result.avgPriceAfterTaxYield, closeTo(0.003917, 1e-5));
-      expect(result.twrGross, closeTo(1.348760, 1e-5));
-      expect(result.twrAfterTax, closeTo(1.342708, 1e-5));
+      // rocPct 0 (TQQQ pays ordinary income): basis = start + full distribution,
+      // and the big total return is almost entirely price appreciation.
+      expect(result.startPrice, closeTo(35.014999, 1e-5));
+      expect(result.dripShares, closeTo(1.006937, 1e-5));
+      expect(result.incomeAmount, closeTo(0.316000, 1e-5));
+      expect(result.taxThisYear, closeTo(0.116920, 1e-5));
+      expect(result.nav, closeTo(82.236522, 1e-5));
+      expect(result.costBasis, closeTo(35.330999, 1e-5));
+      expect(result.unrealizedGL, closeTo(46.905522, 1e-5));
+      expect(result.afterTaxYieldRoc, closeTo(0.002438, 1e-5));
+      expect(result.totalReturnBeforeTax, closeTo(1.348608, 1e-5));
+      expect(result.totalReturnAfterTax, closeTo(1.345269, 1e-5));
+      _expectInvariants(result, rocPct: 0);
+    });
+
+    test('print Statement (validated) for fixture tickers in app row order', () {
+      // Recomputes from fixtures and prints the result panel the user sees on
+      // the Calculate tab: the total-return statement (with its nested
+      // components) plus the reference grid, for each fixture ticker.
+      final ymag = YieldMath.compute(
+        ticker: 'YMAG',
+        currentPrice: ymag_daily.kYMAGCurrentPrice,
+        federalPct: 32,
+        statePct: 5,
+        localPct: 0,
+        distributions: ymag_daily.kYMAGDistributions,
+        priceBars: ymag_daily.kYMAGPriceBars,
+        rocPct: 71,
+      );
+      final tqqq = YieldMath.compute(
+        ticker: 'TQQQ',
+        currentPrice: kTQQQCurrentPrice,
+        federalPct: 32,
+        statePct: 5,
+        localPct: 0,
+        distributions: kTQQQDistributions,
+        priceBars: kTQQQPriceBars,
+        rocPct: 0,
+      );
+
+      String pct(double v) =>
+          '${v < 0 ? '−' : '+'}${(v.abs() * 100).toStringAsFixed(2)}%';
+      String plain(double v) => '${(v * 100).toStringAsFixed(2)}%';
+      String money(double v) => '\$${v.toStringAsFixed(2)}';
+      String signed(double v) =>
+          '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
+
+      final buf = StringBuffer()..writeln();
+      for (final r in [ymag, tqqq]) {
+        final afterTaxValue = r.nav - r.taxThisYear;
+        buf
+          ..writeln('Statement (validated) — ${r.ticker}'
+              '  [roc ${r.rocPct.toStringAsFixed(0)}%, tax '
+              '${(r.combinedRate * 100).toStringAsFixed(0)}%]')
+          ..writeln('-' * 56)
+          ..writeln('${'Total return after tax'.padRight(34)}'
+              '${pct(r.totalReturnAfterTax).padLeft(12)}')
+          ..writeln('  ${money(r.startPrice)} → ${money(afterTaxValue)}')
+          ..writeln('${'  Income (taxable)'.padRight(34)}'
+              '${signed(r.incomeAmount).padLeft(12)}')
+          ..writeln('${'  Unrealized G/L'.padRight(34)}'
+              '${signed(r.unrealizedGL).padLeft(12)}')
+          ..writeln('${'  Tax this year'.padRight(34)}'
+              '${signed(-r.taxThisYear).padLeft(12)}')
+          ..writeln('${'Advertised yield'.padRight(34)}'
+              '${plain(r.grossYield).padLeft(12)}')
+          ..writeln('${'After-tax yield'.padRight(34)}'
+              '${plain(r.afterTaxYieldRoc).padLeft(12)}')
+          ..writeln('Reference                         start          now')
+          ..writeln('${'  Price'.padRight(28)}'
+              '${money(r.startPrice).padLeft(12)}${money(r.currentPrice).padLeft(13)}')
+          ..writeln('${'  Shares'.padRight(28)}'
+              '${'1.00'.padLeft(12)}${r.dripShares.toStringAsFixed(2).padLeft(13)}')
+          ..writeln('${'  NAV'.padRight(28)}'
+              '${money(r.startPrice).padLeft(12)}${money(r.nav).padLeft(13)}')
+          ..writeln('${'  Cost basis'.padRight(28)}'
+              '${money(r.startPrice).padLeft(12)}${money(r.costBasis).padLeft(13)}')
+          ..writeln('${'  Unrealized G/L'.padRight(28)}'
+              '${'—'.padLeft(12)}${signed(r.unrealizedGL).padLeft(13)}')
+          ..writeln();
+      }
+      // ignore: avoid_print
+      print(buf.toString());
     });
   });
 
@@ -286,12 +377,10 @@ void main() {
         priceBars: closes,
       );
       expect(result.qualifies, isFalse);
-      expect(result.reason,
-          equals('no distributions in last 12 months'));
+      expect(result.reason, equals('no distributions in last 12 months'));
       expect(result.grossYield, 0);
-      expect(result.afterTaxYield, 0);
       expect(result.compoundedGrossYield, 0);
-      expect(result.twrGross, 0);
+      expect(result.totalReturnAfterTax, 0);
       // Prices are still surfaced for the Prices tab.
       expect(result.priceBars.length, closes.length);
       expect(result.distributions, isEmpty);
@@ -314,10 +403,9 @@ void main() {
       );
       // DRIP falls back to currentPrice (50), so factor = 1 + 5/50 = 1.10.
       expect(result.compoundedGrossYield, closeTo(0.10, _eps));
-      // Avg-price falls back to currentPrice when no valid closes.
-      expect(result.avgPriceGrossYield, closeTo(5 / 50, _eps));
-      // TWR contributes 0 because p0/p1 are null.
-      expect(result.twrGross, 0);
+      // startPrice falls back to currentPrice (50): NAV = 1.10 × 50 = 55,
+      // total return before tax = (55 − 50) / 50 = 0.10.
+      expect(result.totalReturnBeforeTax, closeTo(0.10, _eps));
     });
 
     test('single distribution, single close', () {
@@ -336,8 +424,8 @@ void main() {
       );
       expect(result.grossYield, closeTo(0.04, _eps));
       expect(result.compoundedGrossYield, closeTo(0.04, _eps));
-      // No pair → TWR is the identity (factor=1 → 0).
-      expect(result.twrGross, 0);
+      // startPrice = 100: NAV = 1.04 × 100 = 104, (104 − 100) / 100 = 0.04.
+      expect(result.totalReturnBeforeTax, closeTo(0.04, _eps));
     });
   });
 
@@ -369,15 +457,12 @@ void main() {
 }
 
 // Distribution timestamps from Yahoo are 13:30 UTC (US market 9:30 ET).
-DateTime _ymagTs(int y, int m, int d) =>
-    DateTime.utc(y, m, d, 13, 30);
+DateTime _ymagTs(int y, int m, int d) => DateTime.utc(y, m, d, 13, 30);
 
 // Bar timestamps from the original 1mo YMAG capture are first-of-month at ~04:00 UTC.
-// Kept monthly-shaped: math is bar-shape agnostic so this still proves correctness.
 DateTime _ymagBar(int y, int m) => DateTime.utc(y, m, 1, 4, 0);
 
 // Price bars from the real YMAG response captured 2026-05-25.
-// 13 bars: 12 month-starts plus a partial-current-month bar.
 final List<PriceBar> _ymagPriceBars = [
   PriceBar(date: _ymagBar(2025, 6), close: 15.25),
   PriceBar(date: _ymagBar(2025, 7), close: 15.44),

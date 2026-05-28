@@ -33,46 +33,48 @@ def price_at(div_ts, bars):
     return None
 
 
-def compute(ticker, current_price, fed_pct, state_pct, local_pct, dists, bars):
-    """dists: list[(ts, amount)], bars: list[(ts, close-or-None)] — both unsorted ok."""
+def compute(ticker, current_price, fed_pct, state_pct, local_pct, dists, bars,
+            roc_pct=0.0):
+    """dists: list[(ts, amount)], bars: list[(ts, close-or-None)] — both unsorted ok.
+
+    Mirrors lib/main.dart YieldMath.compute: real broker-DRIP share growth plus
+    a return-of-capital-aware tax basis (see roc-cost-basis-and-gl memory)."""
     sorted_bars = sorted(bars, key=lambda b: b[0])
     if not dists:
         return {"qualifies": False, "reason": "no distributions in last 12 months"}
 
     combined = (fed_pct + state_pct + local_pct) / 100.0
     asc = sorted(dists, key=lambda d: d[0])
-    div_by_bar = [0.0] * len(sorted_bars)
 
     total = 0.0
     cf_gross = 1.0
-    cf_net = 1.0
     for ts, amt in asc:
         total += amt
-        bi = bar_index_at(ts, sorted_bars)
-        if 0 <= bi < len(div_by_bar):
-            div_by_bar[bi] += amt
         p = price_at(ts, sorted_bars) or current_price
         cf_gross *= 1 + amt / p
-        cf_net *= 1 + (amt * (1 - combined)) / p
 
     gross = total / current_price
-    after = gross * (1 - combined)
+    drip_shares = cf_gross
 
-    valids = [c for _, c in sorted_bars if c is not None and c > 0]
-    avg_price = (sum(valids) / len(valids)) if valids else current_price
-    avg_gross = total / avg_price
-    avg_net = avg_gross * (1 - combined)
+    # First valid close ≈ price one year ago.
+    start_price = current_price
+    for _ts, c in sorted_bars:
+        if c is not None and c > 0:
+            start_price = c
+            break
 
-    twr_g = 1.0
-    twr_n = 1.0
-    for i in range(len(sorted_bars) - 1):
-        p0 = sorted_bars[i][1]
-        p1 = sorted_bars[i + 1][1]
-        if p0 is None or p1 is None or p0 <= 0:
-            continue
-        d = div_by_bar[i] if i < len(div_by_bar) else 0.0
-        twr_g *= (p1 + d) / p0
-        twr_n *= (p1 + d * (1 - combined)) / p0
+    # Broker-DRIP + return-of-capital economics. Only the income portion is
+    # taxed now; ROC lowers basis (and cancels the basis added by reinvesting
+    # it), so basis = start price + reinvested income.
+    roc_frac = min(max(roc_pct / 100.0, 0.0), 1.0)
+    income_amount = total * (1 - roc_frac)
+    tax_this_year = income_amount * combined
+    nav = drip_shares * current_price
+    cost_basis = start_price + income_amount
+    unrealized_gl = nav - cost_basis
+    after_tax_yield_roc = (total - tax_this_year) / current_price
+    total_return_before_tax = (nav - start_price) / start_price
+    total_return_after_tax = (nav - tax_this_year - start_price) / start_price
 
     return {
         "qualifies": True,
@@ -80,15 +82,20 @@ def compute(ticker, current_price, fed_pct, state_pct, local_pct, dists, bars):
         "currentPrice": current_price,
         "numBars": len(sorted_bars),
         "numDists": len(dists),
+        "rocPct": roc_pct,
+        "startPrice": start_price,
         "sumDistributions": total,
         "grossYield": gross,
-        "afterTaxYield": after,
         "compoundedGrossYield": cf_gross - 1,
-        "compoundedAfterTaxYield": cf_net - 1,
-        "avgPriceGrossYield": avg_gross,
-        "avgPriceAfterTaxYield": avg_net,
-        "twrGross": twr_g - 1,
-        "twrAfterTax": twr_n - 1,
+        "dripShares": drip_shares,
+        "incomeAmount": income_amount,
+        "taxThisYear": tax_this_year,
+        "nav": nav,
+        "costBasis": cost_basis,
+        "unrealizedGL": unrealized_gl,
+        "afterTaxYieldRoc": after_tax_yield_roc,
+        "totalReturnBeforeTax": total_return_before_tax,
+        "totalReturnAfterTax": total_return_after_tax,
     }
 
 
@@ -112,6 +119,9 @@ def load_fixture(path):
 
 
 def main():
+    # ROC share of distributions per ticker: YMAG distributions are ~71% return
+    # of capital; TQQQ pays ordinary income (no ROC).
+    roc_by_ticker = {"YMAG": 71.0, "TQQQ": 0.0}
     rows = []
     for t in ("YMAG", "TQQQ"):
         fx = load_fixture(f"/tmp/iyield_fixtures/{t}.json")
@@ -123,22 +133,31 @@ def main():
             local_pct=0,
             dists=fx["dists"],
             bars=fx["bars"],
+            roc_pct=roc_by_ticker.get(fx["ticker"], 0.0),
         )
         rows.append(out)
 
     def pct(x):
         return f"{x * 100:8.4f}%"
 
+    def money(x):
+        return f"{x:8.4f}"
+
     keys = [
-        ("sumDistributions", "Sum distributions ($)", lambda v: f"{v:8.4f}"),
-        ("grossYield", "Gross yield (simple TTM)", pct),
-        ("afterTaxYield", "After-tax yield (simple)", pct),
+        ("rocPct", "Return of capital (%)", lambda v: f"{v:8.1f}"),
+        ("startPrice", "Start price ($)", money),
+        ("sumDistributions", "Sum distributions ($)", money),
+        ("grossYield", "Advertised yield", pct),
+        ("afterTaxYieldRoc", "After-tax yield (ROC)", pct),
         ("compoundedGrossYield", "DRIP gross", pct),
-        ("compoundedAfterTaxYield", "DRIP after-tax", pct),
-        ("avgPriceGrossYield", "Avg-price gross", pct),
-        ("avgPriceAfterTaxYield", "Avg-price after-tax", pct),
-        ("twrGross", "TWR gross (incl. price)", pct),
-        ("twrAfterTax", "TWR after-tax", pct),
+        ("dripShares", "DRIP shares", money),
+        ("incomeAmount", "Income (taxable) ($)", money),
+        ("taxThisYear", "Tax this year ($)", money),
+        ("nav", "NAV ($)", money),
+        ("costBasis", "Cost basis ($)", money),
+        ("unrealizedGL", "Unrealized G/L ($)", money),
+        ("totalReturnBeforeTax", "Total return (before tax)", pct),
+        ("totalReturnAfterTax", "Total return (after tax)", pct),
     ]
 
     name_w = max(len(label) for _, label, _ in keys) + 1

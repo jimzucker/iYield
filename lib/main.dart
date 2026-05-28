@@ -61,18 +61,38 @@ class YieldResult {
   final String ticker;
   final double currentPrice;
   final double sumDistributions;
-  // 1) Simple TTM: sum(dist) / current_price
+  // Advertised yield: sum(dist) / current_price.
   final double grossYield;
-  final double afterTaxYield;
-  // 2) Compounded DRIP: prod(1 + d_t / P_t) - 1
+  // Share growth from a real broker DRIP of the full gross distribution,
+  // starting from 1 share: prod(1 + d_t / P_t) - 1. dripShares = this + 1.
   final double compoundedGrossYield;
-  final double compoundedAfterTaxYield;
-  // 3) Average-price denominator: sum(dist) / mean(bar_closes)
-  final double avgPriceGrossYield;
-  final double avgPriceAfterTaxYield;
-  // 4) TWR including price changes: prod(1 + (P_{t+1} + d_t) / P_t - 1) - 1
-  final double twrGross;
-  final double twrAfterTax;
+  final double dripShares;
+
+  // Position economics under the broker-DRIP + return-of-capital model.
+  // startPrice ≈ price one year ago (first valid close); combinedRate is the
+  // total tax fraction; rocPct is the share of distributions that is return of
+  // capital (untaxed now, but it lowers basis — see roc-cost-basis-and-gl memory).
+  final double startPrice;
+  final double combinedRate;
+  final double rocPct;
+  // incomeAmount = taxable income portion of distributions = sum * (1 - roc).
+  final double incomeAmount;
+  // Tax owed this year, on the income portion only.
+  final double taxThisYear;
+  // nav = dripShares * currentPrice (what the position is worth now).
+  final double nav;
+  // Tax basis = original cost + reinvested INCOME. Reinvesting the ROC portion
+  // adds basis but ROC also lowers basis by the same amount, so they cancel:
+  // costBasis = startPrice + incomeAmount.
+  final double costBasis;
+  // unrealizedGL = nav - costBasis (taxed as capital gains only when sold).
+  final double unrealizedGL;
+  // ROC-aware after-tax distribution yield: (sum - taxThisYear) / currentPrice.
+  final double afterTaxYieldRoc;
+  // Total return on the original cost, before and after this year's tax.
+  final double totalReturnBeforeTax;
+  final double totalReturnAfterTax;
+
   final List<DistributionEntry> distributions;
   final List<PriceBar> priceBars;
   final bool qualifies;
@@ -83,13 +103,19 @@ class YieldResult {
     required this.currentPrice,
     required this.sumDistributions,
     required this.grossYield,
-    required this.afterTaxYield,
     required this.compoundedGrossYield,
-    required this.compoundedAfterTaxYield,
-    required this.avgPriceGrossYield,
-    required this.avgPriceAfterTaxYield,
-    required this.twrGross,
-    required this.twrAfterTax,
+    required this.dripShares,
+    required this.startPrice,
+    required this.combinedRate,
+    required this.rocPct,
+    required this.incomeAmount,
+    required this.taxThisYear,
+    required this.nav,
+    required this.costBasis,
+    required this.unrealizedGL,
+    required this.afterTaxYieldRoc,
+    required this.totalReturnBeforeTax,
+    required this.totalReturnAfterTax,
     required this.distributions,
     required this.priceBars,
     required this.qualifies,
@@ -107,13 +133,19 @@ class YieldResult {
       currentPrice: currentPrice,
       sumDistributions: 0,
       grossYield: 0,
-      afterTaxYield: 0,
       compoundedGrossYield: 0,
-      compoundedAfterTaxYield: 0,
-      avgPriceGrossYield: 0,
-      avgPriceAfterTaxYield: 0,
-      twrGross: 0,
-      twrAfterTax: 0,
+      dripShares: 1,
+      startPrice: currentPrice,
+      combinedRate: 0,
+      rocPct: 0,
+      incomeAmount: 0,
+      taxThisYear: 0,
+      nav: currentPrice,
+      costBasis: currentPrice,
+      unrealizedGL: 0,
+      afterTaxYieldRoc: 0,
+      totalReturnBeforeTax: 0,
+      totalReturnAfterTax: 0,
       distributions: const [],
       priceBars: priceBars,
       qualifies: false,
@@ -133,6 +165,7 @@ class YieldMath {
     required double localPct,
     required List<DistributionEntry> distributions,
     required List<PriceBar> priceBars,
+    double rocPct = 0,
   }) {
     final sortedCloses = [...priceBars]
       ..sort((a, b) => a.date.compareTo(b.date));
@@ -149,47 +182,42 @@ class YieldMath {
     final combined = (federalPct + statePct + localPct) / 100.0;
     final ascDist = [...distributions]
       ..sort((a, b) => a.date.compareTo(b.date));
-    final divByBar = List<double>.filled(sortedCloses.length, 0);
 
     double sum = 0;
     double compoundFactorGross = 1;
-    double compoundFactorNet = 1;
 
     for (final d in ascDist) {
       sum += d.amount;
-      final barIdx = barIndexAt(d.date, sortedCloses);
-      if (barIdx >= 0 && barIdx < divByBar.length) {
-        divByBar[barIdx] += d.amount;
-      }
       final priceAtDiv = priceAt(d.date, sortedCloses) ?? currentPrice;
       compoundFactorGross *= 1 + d.amount / priceAtDiv;
-      compoundFactorNet *= 1 + (d.amount * (1 - combined)) / priceAtDiv;
     }
 
     final grossYield = sum / currentPrice;
-    final afterTax = grossYield * (1 - combined);
+    final dripShares = compoundFactorGross;
 
-    final validCloses = sortedCloses
-        .map((c) => c.close)
-        .whereType<double>()
-        .where((v) => v > 0)
-        .toList();
-    final avgPrice = validCloses.isEmpty
-        ? currentPrice
-        : validCloses.reduce((a, b) => a + b) / validCloses.length;
-    final avgGross = sum / avgPrice;
-    final avgNet = avgGross * (1 - combined);
-
-    double twrFactorGross = 1;
-    double twrFactorNet = 1;
-    for (int i = 0; i + 1 < sortedCloses.length; i++) {
-      final p0 = sortedCloses[i].close;
-      final p1 = sortedCloses[i + 1].close;
-      if (p0 == null || p1 == null || p0 <= 0) continue;
-      final d = i < divByBar.length ? divByBar[i] : 0.0;
-      twrFactorGross *= (p1 + d) / p0;
-      twrFactorNet *= (p1 + d * (1 - combined)) / p0;
+    // First valid close ≈ price one year ago; falls back to currentPrice if
+    // every bar's close is null.
+    double startPrice = currentPrice;
+    for (final bar in sortedCloses) {
+      final c = bar.close;
+      if (c != null && c > 0) {
+        startPrice = c;
+        break;
+      }
     }
+
+    // Broker-DRIP + return-of-capital economics. Only the income portion is
+    // taxed now; ROC lowers basis (and cancels the basis added by reinvesting
+    // it), so basis = startPrice + reinvested income. See roc-cost-basis-and-gl.
+    final rocFrac = (rocPct / 100.0).clamp(0.0, 1.0);
+    final incomeAmount = sum * (1 - rocFrac);
+    final taxThisYear = incomeAmount * combined;
+    final nav = dripShares * currentPrice;
+    final costBasis = startPrice + incomeAmount;
+    final unrealizedGL = nav - costBasis;
+    final afterTaxYieldRoc = (sum - taxThisYear) / currentPrice;
+    final totalReturnBeforeTax = (nav - startPrice) / startPrice;
+    final totalReturnAfterTax = (nav - taxThisYear - startPrice) / startPrice;
 
     final descDist = [...distributions]
       ..sort((a, b) => b.date.compareTo(a.date));
@@ -199,13 +227,19 @@ class YieldMath {
       currentPrice: currentPrice,
       sumDistributions: sum,
       grossYield: grossYield,
-      afterTaxYield: afterTax,
       compoundedGrossYield: compoundFactorGross - 1,
-      compoundedAfterTaxYield: compoundFactorNet - 1,
-      avgPriceGrossYield: avgGross,
-      avgPriceAfterTaxYield: avgNet,
-      twrGross: twrFactorGross - 1,
-      twrAfterTax: twrFactorNet - 1,
+      dripShares: dripShares,
+      startPrice: startPrice,
+      combinedRate: combined,
+      rocPct: rocPct,
+      incomeAmount: incomeAmount,
+      taxThisYear: taxThisYear,
+      nav: nav,
+      costBasis: costBasis,
+      unrealizedGL: unrealizedGL,
+      afterTaxYieldRoc: afterTaxYieldRoc,
+      totalReturnBeforeTax: totalReturnBeforeTax,
+      totalReturnAfterTax: totalReturnAfterTax,
       distributions: descDist,
       priceBars: sortedCloses,
       qualifies: true,
@@ -261,6 +295,7 @@ class _YieldScreenState extends State<YieldScreen> {
   final _federalCtrl = TextEditingController();
   final _stateCtrl = TextEditingController();
   final _localCtrl = TextEditingController(text: '0');
+  final _rocCtrl = TextEditingController(text: '71');
 
   bool _loading = false;
   String? _error;
@@ -270,6 +305,7 @@ class _YieldScreenState extends State<YieldScreen> {
   static const _kFederal = 'rate_federal';
   static const _kState = 'rate_state';
   static const _kLocal = 'rate_local';
+  static const _kRoc = 'rate_roc';
 
   @override
   void initState() {
@@ -284,6 +320,7 @@ class _YieldScreenState extends State<YieldScreen> {
       _federalCtrl.text = prefs.getString(_kFederal) ?? '';
       _stateCtrl.text = prefs.getString(_kState) ?? '';
       _localCtrl.text = prefs.getString(_kLocal) ?? '0';
+      _rocCtrl.text = prefs.getString(_kRoc) ?? '71';
     });
   }
 
@@ -293,6 +330,7 @@ class _YieldScreenState extends State<YieldScreen> {
     await prefs.setString(_kFederal, _federalCtrl.text);
     await prefs.setString(_kState, _stateCtrl.text);
     await prefs.setString(_kLocal, _localCtrl.text);
+    await prefs.setString(_kRoc, _rocCtrl.text);
   }
 
   @override
@@ -301,10 +339,25 @@ class _YieldScreenState extends State<YieldScreen> {
     _federalCtrl.dispose();
     _stateCtrl.dispose();
     _localCtrl.dispose();
+    _rocCtrl.dispose();
     super.dispose();
   }
 
+  // Select the field's entire contents so the next keystroke replaces them.
+  // Matches the desktop "click to type-over" pattern users expect on numeric
+  // and ticker fields. Posting to the next frame lets the framework finish
+  // its own focus/selection bookkeeping before we override.
+  void _selectAll(TextEditingController c) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (c.text.isEmpty) return;
+      c.selection = TextSelection(baseOffset: 0, extentOffset: c.text.length);
+    });
+  }
+
   Future<void> _calculate() async {
+    // Dismiss the keyboard the moment the user commits — otherwise it
+    // covers the result card on smaller phones.
+    FocusManager.instance.primaryFocus?.unfocus();
     final ticker = _tickerCtrl.text.trim().toUpperCase();
     if (ticker.isEmpty) {
       setState(() => _error = 'Enter a ticker.');
@@ -314,8 +367,14 @@ class _YieldScreenState extends State<YieldScreen> {
     final state = double.tryParse(_stateCtrl.text.trim());
     final localText = _localCtrl.text.trim();
     final local = double.tryParse(localText.isEmpty ? '0' : localText);
+    final rocText = _rocCtrl.text.trim();
+    final roc = double.tryParse(rocText.isEmpty ? '0' : rocText);
     if (fed == null || state == null || local == null) {
       setState(() => _error = 'Tax rates must be numeric (e.g. 32 for 32%).');
+      return;
+    }
+    if (roc == null || roc < 0 || roc > 100) {
+      setState(() => _error = 'Return of capital % must be between 0 and 100.');
       return;
     }
 
@@ -333,6 +392,7 @@ class _YieldScreenState extends State<YieldScreen> {
         federalPct: fed,
         statePct: state,
         localPct: local,
+        rocPct: roc,
       );
       setState(() {
         _result = result;
@@ -351,6 +411,7 @@ class _YieldScreenState extends State<YieldScreen> {
     required double federalPct,
     required double statePct,
     required double localPct,
+    required double rocPct,
   }) async {
     final uri = Uri.parse(
         'https://query2.finance.yahoo.com/v8/finance/chart/$ticker?interval=1d&range=1y&events=div');
@@ -423,6 +484,7 @@ class _YieldScreenState extends State<YieldScreen> {
       localPct: localPct,
       distributions: distributionList,
       priceBars: priceBars,
+      rocPct: rocPct,
     );
   }
 
@@ -465,16 +527,48 @@ class _YieldScreenState extends State<YieldScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          TextField(
-            controller: _tickerCtrl,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            decoration: fieldDecoration.copyWith(labelText: 'Ticker'),
-            textCapitalization: TextCapitalization.characters,
-            autocorrect: false,
-            inputFormatters: [
-              TextInputFormatter.withFunction((oldVal, newVal) {
-                return newVal.copyWith(text: newVal.text.toUpperCase());
-              }),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _tickerCtrl,
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.primary),
+                  decoration: fieldDecoration.copyWith(
+                    labelText: 'Ticker',
+                    filled: true,
+                    fillColor: Theme.of(context)
+                        .colorScheme
+                        .primary
+                        .withValues(alpha: 0.10),
+                  ),
+                  textCapitalization: TextCapitalization.characters,
+                  autocorrect: false,
+                  onTap: () => _selectAll(_tickerCtrl),
+                  inputFormatters: [
+                    TextInputFormatter.withFunction((oldVal, newVal) {
+                      return newVal.copyWith(text: newVal.text.toUpperCase());
+                    }),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 3,
+                child: TextField(
+                  controller: _rocCtrl,
+                  style: const TextStyle(fontSize: 18),
+                  decoration: fieldDecoration.copyWith(
+                      labelText: 'Return of capital %'),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  onTap: () => _selectAll(_rocCtrl),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -488,6 +582,7 @@ class _YieldScreenState extends State<YieldScreen> {
                   decoration: fieldDecoration.copyWith(labelText: 'Federal %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  onTap: () => _selectAll(_federalCtrl),
                 ),
               ),
               const SizedBox(width: 10),
@@ -498,6 +593,7 @@ class _YieldScreenState extends State<YieldScreen> {
                   decoration: fieldDecoration.copyWith(labelText: 'State %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  onTap: () => _selectAll(_stateCtrl),
                 ),
               ),
               const SizedBox(width: 10),
@@ -508,6 +604,7 @@ class _YieldScreenState extends State<YieldScreen> {
                   decoration: fieldDecoration.copyWith(labelText: 'Local %'),
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
+                  onTap: () => _selectAll(_localCtrl),
                 ),
               ),
             ],
@@ -550,6 +647,15 @@ class _ResultCard extends StatelessWidget {
   const _ResultCard({required this.result});
 
   String _money(double v) => '\$${v.toStringAsFixed(2)}';
+  String _signedMoney(double v) =>
+      '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
+  String _signedPct(double v) =>
+      '${v < 0 ? '−' : '+'}${(v.abs() * 100).toStringAsFixed(1)}%';
+  String _pctPlain(double v) => '${(v * 100).toStringAsFixed(1)}%';
+
+  static final Color _gain = Colors.greenAccent.shade400;
+  static final Color _loss = Colors.redAccent.shade200;
+  Color _signColor(double v) => v < 0 ? _loss : _gain;
 
   @override
   Widget build(BuildContext context) {
@@ -590,6 +696,7 @@ class _ResultCard extends StatelessWidget {
       );
     }
 
+    final afterTaxValue = r.nav - r.taxThisYear;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -597,41 +704,83 @@ class _ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // The entered ticker is highlighted in the input field above, so we
+            // don't repeat it here — we lead with TTM distributions instead.
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(r.ticker, style: theme.textTheme.headlineMedium),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('TTM distributions',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant)),
+                    Text(_money(r.sumDistributions),
+                        style: theme.textTheme.headlineMedium
+                            ?.copyWith(fontWeight: FontWeight.w700)),
+                  ],
+                ),
                 _StatusChip(qualifies: true),
               ],
             ),
-            const SizedBox(height: 6),
-            Text(
-              '${_money(r.currentPrice)} • '
-              'TTM distributions ${_money(r.sumDistributions)}',
-              style: theme.textTheme.bodyLarge
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-            ),
+            const SizedBox(height: 4),
+            Text('${_money(r.currentPrice)} per share',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             const Divider(height: 28),
 
-            // ─── Hero: the two numbers a yield-investor actually cares about.
-            _HeroNumber(
-              label: 'After-tax effective yield',
-              sublabel: 'income only • DRIP at month-of-payout price',
-              value: r.compoundedAfterTaxYield,
-              alwaysIndigo: true,
-            ),
-            const SizedBox(height: 14),
-            _HeroNumber(
+            // ─── BLUF: total return after tax, with the three components that
+            //     sum to it nested beneath (income + unrealized G/L − tax).
+            _StmtRow(
               label: 'Total return after tax',
-              sublabel: 'income + price change over 12 months',
-              value: r.twrAfterTax,
-              alwaysIndigo: false,
+              sub: '${_money(r.startPrice)} → ${_money(afterTaxValue)} on your start',
+              value: _signedPct(r.totalReturnAfterTax),
+              valueColor: _signColor(r.totalReturnAfterTax),
+              headline: true,
+            ),
+            const SizedBox(height: 10),
+            _StmtRow(
+              label: 'Income (taxable)',
+              sub: 'distribution income you earned',
+              value: _signedMoney(r.incomeAmount),
+              valueColor: _gain,
+              nested: true,
+            ),
+            _StmtRow(
+              label: 'Unrealized G/L',
+              sub: '${_money(r.nav)} value − ${_money(r.costBasis)} basis',
+              value: _signedMoney(r.unrealizedGL),
+              valueColor: _signColor(r.unrealizedGL),
+              nested: true,
+            ),
+            _StmtRow(
+              label: 'Tax this year',
+              sub: '${(r.combinedRate * 100).toStringAsFixed(0)}% on the '
+                  '${_money(r.incomeAmount)} income',
+              value: _signedMoney(-r.taxThisYear),
+              valueColor: _loss,
+              nested: true,
             ),
             const Divider(height: 28),
 
-            // ─── Detail: all four views in a gross/after-tax table.
-            _ViewsTable(result: r),
+            // ─── The two yields (denominator = current price), kept separate
+            //     from the cost-based total return above.
+            _StmtRow(
+              label: 'Advertised yield',
+              sub: '${_money(r.sumDistributions)} ÷ ${_money(r.currentPrice)}',
+              value: _pctPlain(r.grossYield),
+            ),
+            const SizedBox(height: 8),
+            _StmtRow(
+              label: 'After-tax yield',
+              sub: 'kept ${_money(r.sumDistributions - r.taxThisYear)} ÷ '
+                  '${_money(r.currentPrice)}',
+              value: _pctPlain(r.afterTaxYieldRoc),
+            ),
+            const Divider(height: 28),
+
+            _ReferenceGrid(result: r),
           ],
         ),
       ),
@@ -666,146 +815,150 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-class _HeroNumber extends StatelessWidget {
+// One line of the result statement: a label (+ optional explanatory sub) on the
+// left and a right-aligned value. `headline` renders the BLUF total return big;
+// `nested` indents the components that sum to it.
+class _StmtRow extends StatelessWidget {
   final String label;
-  final String sublabel;
-  final double value;
-  final bool alwaysIndigo;
-  const _HeroNumber({
+  final String? sub;
+  final String value;
+  final Color? valueColor;
+  final bool headline;
+  final bool nested;
+  const _StmtRow({
     required this.label,
-    required this.sublabel,
+    this.sub,
     required this.value,
-    required this.alwaysIndigo,
+    this.valueColor,
+    this.headline = false,
+    this.nested = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isNeg = value < 0;
-    final color = alwaysIndigo
-        ? theme.colorScheme.primary
-        : (isNeg ? Colors.redAccent.shade200 : Colors.greenAccent.shade400);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label,
-                  style: theme.textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600)),
-              Text(sublabel,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant)),
-            ],
+    final labelStyle = headline
+        ? theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)
+        : theme.textTheme.titleSmall?.copyWith(
+            fontWeight: nested ? FontWeight.w500 : FontWeight.w600);
+    final valueStyle = (headline
+            ? theme.textTheme.headlineMedium
+            : theme.textTheme.titleMedium)
+        ?.copyWith(
+      color: valueColor ?? theme.colorScheme.onSurface,
+      fontWeight: FontWeight.w700,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    return Padding(
+      padding: EdgeInsets.only(
+          left: nested ? 16 : 0, top: nested ? 3 : 0, bottom: nested ? 3 : 0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: labelStyle),
+                if (sub != null)
+                  Text(sub!,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant)),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Text(
-          '${(value * 100).toStringAsFixed(2)}%',
-          style: theme.textTheme.displaySmall?.copyWith(
-              color: color,
-              fontWeight: FontWeight.w700,
-              fontFeatures: const [FontFeature.tabularFigures()]),
-        ),
-      ],
+          const SizedBox(width: 12),
+          Text(value, style: valueStyle),
+        ],
+      ),
     );
   }
 }
 
-class _ViewsTable extends StatelessWidget {
+// "Show your work" grid: the raw Price/Shares/NAV/Cost-basis/Unrealized-G/L the
+// statement above is computed from, across the start (~1y ago) and current month.
+class _ReferenceGrid extends StatelessWidget {
   final YieldResult result;
-  const _ViewsTable({required this.result});
+  const _ReferenceGrid({required this.result});
+
+  String _money(double v) => '\$${v.toStringAsFixed(2)}';
+  String _signedMoney(double v) =>
+      '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
+
+  static const _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  String _monthLabel(DateTime d) =>
+      "${_months[d.month - 1]} '${(d.year % 100).toString().padLeft(2, '0')}";
 
   @override
   Widget build(BuildContext context) {
     final r = result;
     final theme = Theme.of(context);
-    final rows = <(String, double, double)>[
-      ('Simple TTM', r.grossYield, r.afterTaxYield),
-      ('Compounded DRIP', r.compoundedGrossYield, r.compoundedAfterTaxYield),
-      ('Avg-price denom.', r.avgPriceGrossYield, r.avgPriceAfterTaxYield),
-      ('Total return (TWR)', r.twrGross, r.twrAfterTax),
-    ];
-    return Table(
-      columnWidths: const {
-        0: FlexColumnWidth(2),
-        1: IntrinsicColumnWidth(),
-        2: IntrinsicColumnWidth(),
-      },
-      defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+    final bars = r.priceBars;
+    final startLabel = bars.isNotEmpty ? _monthLabel(bars.first.date) : 'Start';
+    final endLabel = bars.isNotEmpty ? _monthLabel(bars.last.date) : 'Now';
+
+    final headStyle = theme.textTheme.labelSmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final labelStyle = theme.textTheme.bodyMedium;
+    final numStyle = theme.textTheme.bodyMedium?.copyWith(
+        fontWeight: FontWeight.w600,
+        fontFeatures: const [FontFeature.tabularFigures()]);
+
+    TableRow row(String label, String start, String end, {Color? endColor}) {
+      return TableRow(children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Text(label, style: labelStyle),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 8),
+          child: Text(start, textAlign: TextAlign.right, style: numStyle),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Text(end,
+              textAlign: TextAlign.right,
+              style: numStyle?.copyWith(color: endColor)),
+        ),
+      ]);
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TableRow(
+        Text('Reference', style: headStyle),
+        const SizedBox(height: 6),
+        Table(
+          columnWidths: const {
+            0: FlexColumnWidth(2),
+            1: IntrinsicColumnWidth(),
+            2: IntrinsicColumnWidth(),
+          },
+          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Text('Method',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant)),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-              child: Text('Gross',
-                  textAlign: TextAlign.right,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant)),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-              child: Text('After-tax',
-                  textAlign: TextAlign.right,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant)),
-            ),
+            TableRow(children: [
+              const SizedBox(),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(startLabel,
+                    textAlign: TextAlign.right, style: headStyle),
+              ),
+              Text(endLabel, textAlign: TextAlign.right, style: headStyle),
+            ]),
+            row('Price', _money(r.startPrice), _money(r.currentPrice)),
+            row('Shares', '1.00', r.dripShares.toStringAsFixed(2)),
+            row('Value (price × shares)', _money(r.startPrice), _money(r.nav)),
+            row('Cost basis', _money(r.startPrice), _money(r.costBasis)),
+            row('Unrealized G/L', '—', _signedMoney(r.unrealizedGL),
+                endColor: r.unrealizedGL < 0
+                    ? Colors.redAccent.shade200
+                    : Colors.greenAccent.shade400),
           ],
         ),
-        for (final (label, gross, net) in rows)
-          TableRow(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Text(label, style: theme.textTheme.bodyLarge),
-              ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
-                child: _PctCell(value: gross, bold: false),
-              ),
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                child: _PctCell(value: net, bold: true),
-              ),
-            ],
-          ),
       ],
-    );
-  }
-}
-
-class _PctCell extends StatelessWidget {
-  final double value;
-  final bool bold;
-  const _PctCell({required this.value, required this.bold});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = value < 0
-        ? Colors.redAccent.shade200
-        : (bold
-            ? Colors.greenAccent.shade400
-            : theme.colorScheme.onSurface);
-    return Text(
-      '${(value * 100).toStringAsFixed(2)}%',
-      textAlign: TextAlign.right,
-      style: TextStyle(
-        color: color,
-        fontSize: 17,
-        fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-        fontFeatures: const [FontFeature.tabularFigures()],
-      ),
     );
   }
 }
@@ -849,6 +1002,13 @@ class _DistributionsTab extends StatelessWidget {
     final firstDate = r.distributions.last.date;
     final lastDate = r.distributions.first.date;
     final avg = total / r.distributions.length;
+    final rocAmount = total - r.incomeAmount;
+    final rocInt = r.rocPct.round();
+    final incInt = (100 - r.rocPct).round();
+    final splitHeadStyle = theme.textTheme.labelMedium
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    final splitNumStyle =
+        theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600);
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: r.distributions.length + 3,
@@ -871,6 +1031,56 @@ class _DistributionsTab extends StatelessWidget {
                   'Total \$${total.toStringAsFixed(4)} • '
                   'avg \$${avg.toStringAsFixed(4)}',
                   style: theme.textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 12),
+                Table(
+                  columnWidths: const {
+                    0: FlexColumnWidth(2),
+                    1: IntrinsicColumnWidth(),
+                    2: IntrinsicColumnWidth(),
+                  },
+                  defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                  children: [
+                    TableRow(children: [
+                      const SizedBox(),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Text('Return of cap. ($rocInt%)',
+                            textAlign: TextAlign.right, style: splitHeadStyle),
+                      ),
+                      Text('Income ($incInt%)',
+                          textAlign: TextAlign.right, style: splitHeadStyle),
+                    ]),
+                    TableRow(children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text('Amount', style: theme.textTheme.bodyMedium),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 4, horizontal: 10),
+                        child: Text('\$${rocAmount.toStringAsFixed(2)}',
+                            textAlign: TextAlign.right, style: splitNumStyle),
+                      ),
+                      Text('\$${r.incomeAmount.toStringAsFixed(2)}',
+                          textAlign: TextAlign.right, style: splitNumStyle),
+                    ]),
+                    TableRow(children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Text('Taxed now?',
+                            style: theme.textTheme.bodyMedium),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 4, horizontal: 10),
+                        child: Text('No',
+                            textAlign: TextAlign.right, style: splitNumStyle),
+                      ),
+                      Text('Yes (\$${r.taxThisYear.toStringAsFixed(2)})',
+                          textAlign: TextAlign.right, style: splitNumStyle),
+                    ]),
+                  ],
                 ),
               ],
             ),
