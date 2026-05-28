@@ -14,10 +14,26 @@
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// Optional CORS proxy origin for the Yahoo Finance endpoint, supplied at build
+/// time via `--dart-define=YAHOO_PROXY=<origin>` (no trailing slash). It is used
+/// only on the web build, where the browser enforces CORS and Yahoo's endpoint
+/// sends no `Access-Control-Allow-Origin` header; native builds always call
+/// Yahoo directly. Empty (the default) means "no proxy". See proxy/ for a
+/// ready-to-deploy Cloudflare Worker.
+const String kYahooProxy = String.fromEnvironment('YAHOO_PROXY');
+
+/// Base origin for the Yahoo chart API: the CORS proxy on web (when configured),
+/// Yahoo directly otherwise. The proxy forwards by path, so the rest of the URL
+/// is identical either way.
+String get yahooBase => (kIsWeb && kYahooProxy.isNotEmpty)
+    ? kYahooProxy
+    : 'https://query2.finance.yahoo.com';
 
 void main() {
   runApp(const TrueYieldApp());
@@ -512,7 +528,7 @@ class _YieldScreenState extends State<YieldScreen> {
     required double rocPct,
   }) async {
     final uri = Uri.parse(
-      'https://query2.finance.yahoo.com/v8/finance/chart/$ticker?interval=1d&range=1y&events=div',
+      '$yahooBase/v8/finance/chart/$ticker?interval=1d&range=1y&events=div',
     );
     final client = widget.client ?? http.Client();
     try {

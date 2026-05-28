@@ -1,0 +1,7 @@
+name = "trueyield-proxy"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Free plan is sufficient. After `wrangler deploy`, the worker is reachable at
+# https://trueyield-proxy.<your-subdomain>.workers.dev — set that URL (no
+# trailing slash) as the YAHOO_PROXY repository variable (see README.md).
