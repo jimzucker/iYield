@@ -37,14 +37,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      # base-href must match the Pages path, i.e. "/<repo-name>/".
-      # If the GitHub repo is renamed (e.g. to TrueYield), update this.
+      # base-href must match the Pages path ("/<repo-name>/"). Deriving it from
+      # the repo name keeps the site working if the repo is ever renamed.
       # YAHOO_PROXY (repo variable) points the web build at the CORS proxy in
       # proxy/ so live lookups work in the browser; harmless if unset.
       - name: Build web
         run: >-
           flutter build web --release
-          --base-href "/iYield/"
+          --base-href "/${{ github.event.repository.name }}/"
           --dart-define=YAHOO_PROXY=${{ vars.YAHOO_PROXY }}
 
       - name: Configure Pages
