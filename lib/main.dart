@@ -806,7 +806,22 @@ class _ResultCard extends StatelessWidget {
               valueColor: _signColor(r.totalReturnAfterTax),
               headline: true,
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
+            // DRIP benefit memo — not a summed component (it's already baked
+            // into Income + Unrealized G/L), so it shows share growth, not $.
+            Padding(
+              padding: const EdgeInsets.only(left: 16),
+              child: Text(
+                'DRIP grew your shares 1.00 → '
+                '${r.dripShares.toStringAsFixed(2)} '
+                '(+${(r.compoundedGrossYield * 100).toStringAsFixed(0)}%)',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
             _StmtRow(
               label: 'Income (taxable)',
               sub:
