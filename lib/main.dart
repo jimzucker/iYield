@@ -402,7 +402,7 @@ class YieldScreen extends StatefulWidget {
   State<YieldScreen> createState() => _YieldScreenState();
 }
 
-class _YieldScreenState extends State<YieldScreen> {
+class _YieldScreenState extends State<YieldScreen> with WidgetsBindingObserver {
   final _tickerCtrl = TextEditingController();
   final _federalCtrl = TextEditingController();
   final _stateCtrl = TextEditingController();
@@ -413,6 +413,9 @@ class _YieldScreenState extends State<YieldScreen> {
   bool _loading = false;
   String? _error;
   YieldResult? _result;
+  // When the shown result was fetched (device clock). Drives the "As of" stamp
+  // and the stale-on-a-new-day check; null whenever no result is displayed.
+  DateTime? _resultFetchedAt;
 
   static const _kTicker = 'last_ticker';
   static const _kFederal = 'rate_federal';
@@ -423,6 +426,7 @@ class _YieldScreenState extends State<YieldScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadSavedInputs();
     for (final c in [
       _tickerCtrl,
@@ -435,6 +439,19 @@ class _YieldScreenState extends State<YieldScreen> {
     }
   }
 
+  // If the app is resumed on a later calendar day, the shown result's TTM
+  // window has shifted, so silently re-run against the same inputs to refresh.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        _result != null &&
+        !_loading &&
+        _resultFetchedAt != null &&
+        isStale(_resultFetchedAt!, DateTime.now())) {
+      _calculate();
+    }
+  }
+
   // Editing any input invalidates a shown result, so drop it — the card must
   // only ever display numbers that match the current inputs.
   void _clearStaleResult() {
@@ -442,6 +459,7 @@ class _YieldScreenState extends State<YieldScreen> {
       setState(() {
         _result = null;
         _error = null;
+        _resultFetchedAt = null;
       });
     }
   }
@@ -468,6 +486,7 @@ class _YieldScreenState extends State<YieldScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _tickerCtrl.dispose();
     _federalCtrl.dispose();
     _stateCtrl.dispose();
@@ -516,6 +535,7 @@ class _YieldScreenState extends State<YieldScreen> {
       _loading = true;
       _error = null;
       _result = null;
+      _resultFetchedAt = null;
     });
 
     await _saveInputs();
@@ -530,6 +550,7 @@ class _YieldScreenState extends State<YieldScreen> {
       );
       setState(() {
         _result = result;
+        _resultFetchedAt = DateTime.now();
         _loading = false;
       });
       // Slide the inputs up so the full result card (through the reference
@@ -745,7 +766,8 @@ class _YieldScreenState extends State<YieldScreen> {
                 child: Text(_error!),
               ),
             ),
-          if (_result != null) _ResultCard(result: _result!),
+          if (_result != null)
+            _ResultCard(result: _result!, fetchedAt: _resultFetchedAt),
         ],
       ),
     );
@@ -965,18 +987,8 @@ class _AboutLink extends StatelessWidget {
 
 class _ResultCard extends StatelessWidget {
   final YieldResult result;
-  const _ResultCard({required this.result});
-
-  String _money(double v) => '\$${v.toStringAsFixed(2)}';
-  String _signedMoney(double v) =>
-      '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
-  String _signedPct(double v) =>
-      '${v < 0 ? '−' : '+'}${(v.abs() * 100).toStringAsFixed(1)}%';
-  String _pctPlain(double v) => '${(v * 100).toStringAsFixed(1)}%';
-
-  static final Color _gain = Colors.greenAccent.shade400;
-  static final Color _loss = Colors.redAccent.shade200;
-  Color _signColor(double v) => v < 0 ? _loss : _gain;
+  final DateTime? fetchedAt;
+  const _ResultCard({required this.result, this.fetchedAt});
 
   @override
   Widget build(BuildContext context) {
@@ -1030,6 +1042,15 @@ class _ResultCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (fetchedAt != null) ...[
+              Text(
+                'As of ${fmtStamp(fetchedAt!)}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             // The entered ticker is highlighted in the input field above and the
             // current price shows in the yield lines + reference grid, so the
             // header is just the headline TTM distributions figure.
@@ -1219,17 +1240,6 @@ class _ReferenceGrid extends StatelessWidget {
   final YieldResult result;
   const _ReferenceGrid({required this.result});
 
-  String _money(double v) => '\$${v.toStringAsFixed(2)}';
-  String _signedMoney(double v) =>
-      '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
-
-  static const _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  String _monthLabel(DateTime d) =>
-      "${_months[d.month - 1]} '${(d.year % 100).toString().padLeft(2, '0')}";
-
   @override
   Widget build(BuildContext context) {
     final r = result;
@@ -1304,20 +1314,55 @@ class _ReferenceGrid extends StatelessWidget {
           'Unrealized G/L',
           '—',
           _signedMoney(r.unrealizedGL),
-          endColor: r.unrealizedGL < 0
-              ? Colors.redAccent.shade200
-              : Colors.greenAccent.shade400,
+          endColor: _signColor(r.unrealizedGL),
         ),
       ],
     );
   }
 }
 
-String _fmtDate(DateTime d) {
-  final m = d.month.toString().padLeft(2, '0');
-  final day = d.day.toString().padLeft(2, '0');
-  return '${d.year}-$m-$day';
+// ─── Shared formatting helpers (top-level so every widget reuses one copy) ───
+const _months = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+final Color _gain = Colors.greenAccent.shade400;
+final Color _loss = Colors.redAccent.shade200;
+Color _signColor(double v) => v < 0 ? _loss : _gain;
+
+String _money(double v) => '\$${v.toStringAsFixed(2)}';
+String _signedMoney(double v) =>
+    '${v < 0 ? '−' : '+'}\$${v.abs().toStringAsFixed(2)}';
+String _signedPct(double v) =>
+    '${v < 0 ? '−' : '+'}${(v.abs() * 100).toStringAsFixed(1)}%';
+String _pctPlain(double v) => '${(v * 100).toStringAsFixed(1)}%';
+
+// "Jan '25" — compact month label for the reference grid columns.
+String _monthLabel(DateTime d) =>
+    "${_months[d.month - 1]} '${(d.year % 100).toString().padLeft(2, '0')}";
+
+// "Dec 31, 2025" — readable date for the distribution/price lists.
+String fmtDateHuman(DateTime d) =>
+    '${_months[d.month - 1]} ${d.day}, ${d.year}';
+
+// "Jan 2025" — readable month range endpoints.
+String _fmtMonthYear(DateTime d) => '${_months[d.month - 1]} ${d.year}';
+
+// "May 28, 2026, 8:41 PM" — when a result was fetched (no intl dependency).
+String fmtStamp(DateTime d) {
+  final h12 = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final mm = d.minute.toString().padLeft(2, '0');
+  final ampm = d.hour < 12 ? 'AM' : 'PM';
+  return '${fmtDateHuman(d)}, $h12:$mm $ampm';
 }
+
+// True when fetchedAt and now fall on different calendar dates — i.e. the shown
+// result was computed on an earlier day and its TTM window has since shifted.
+bool isStale(DateTime fetchedAt, DateTime now) =>
+    fetchedAt.year != now.year ||
+    fetchedAt.month != now.month ||
+    fetchedAt.day != now.day;
 
 class _DistributionsTab extends StatelessWidget {
   final YieldResult? result;
@@ -1356,12 +1401,6 @@ class _DistributionsTab extends StatelessWidget {
     final rocAmount = total - r.incomeAmount;
     final rocInt = r.rocPct.round();
     final incInt = (100 - r.rocPct).round();
-    final splitHeadStyle = theme.textTheme.labelMedium?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    final splitNumStyle = theme.textTheme.bodyMedium?.copyWith(
-      fontWeight: FontWeight.w600,
-    );
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: r.distributions.length + 3,
@@ -1376,97 +1415,30 @@ class _DistributionsTab extends StatelessWidget {
                 Text(r.ticker, style: theme.textTheme.titleLarge),
                 const SizedBox(height: 4),
                 Text(
-                  '${r.distributions.length} distributions • '
-                  '${_fmtDate(firstDate)} → ${_fmtDate(lastDate)}',
-                  style: theme.textTheme.bodyMedium,
-                ),
-                Text(
-                  'Total \$${total.toStringAsFixed(4)} • '
-                  'avg \$${avg.toStringAsFixed(4)}',
-                  style: theme.textTheme.bodyMedium,
+                  '${r.distributions.length} payouts · '
+                  '${_fmtMonthYear(firstDate)} – ${_fmtMonthYear(lastDate)}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(height: 12),
-                Table(
-                  columnWidths: const {
-                    0: FlexColumnWidth(2),
-                    1: IntrinsicColumnWidth(),
-                    2: IntrinsicColumnWidth(),
-                  },
-                  defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-                  children: [
-                    TableRow(
-                      children: [
-                        const SizedBox(),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 10),
-                          child: Text(
-                            'Return of cap. ($rocInt%)',
-                            textAlign: TextAlign.right,
-                            style: splitHeadStyle,
-                          ),
-                        ),
-                        Text(
-                          'Income ($incInt%)',
-                          textAlign: TextAlign.right,
-                          style: splitHeadStyle,
-                        ),
-                      ],
-                    ),
-                    TableRow(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Text(
-                            'Amount',
-                            style: theme.textTheme.bodyMedium,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 10,
-                          ),
-                          child: Text(
-                            '\$${rocAmount.toStringAsFixed(2)}',
-                            textAlign: TextAlign.right,
-                            style: splitNumStyle,
-                          ),
-                        ),
-                        Text(
-                          '\$${r.incomeAmount.toStringAsFixed(2)}',
-                          textAlign: TextAlign.right,
-                          style: splitNumStyle,
-                        ),
-                      ],
-                    ),
-                    TableRow(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Text(
-                            'Taxed now?',
-                            style: theme.textTheme.bodyMedium,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 4,
-                            horizontal: 10,
-                          ),
-                          child: Text(
-                            'No',
-                            textAlign: TextAlign.right,
-                            style: splitNumStyle,
-                          ),
-                        ),
-                        Text(
-                          'Yes (\$${r.taxThisYear.toStringAsFixed(2)})',
-                          textAlign: TextAlign.right,
-                          style: splitNumStyle,
-                        ),
-                      ],
-                    ),
-                  ],
+                _StmtRow(label: 'Total distributions', value: _money(total)),
+                _StmtRow(label: 'Average per payout', value: _money(avg)),
+                _StmtRow(
+                  label: 'Return of capital ($rocInt%)',
+                  value: _money(rocAmount),
+                  nested: true,
+                ),
+                _StmtRow(
+                  label: 'Taxable income ($incInt%)',
+                  value: _money(r.incomeAmount),
+                  nested: true,
+                ),
+                _StmtRow(
+                  label: 'Tax this year',
+                  value: _signedMoney(-r.taxThisYear),
+                  valueColor: _loss,
+                  nested: true,
                 ),
               ],
             ),
@@ -1522,7 +1494,7 @@ class _DistributionsTab extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_fmtDate(d.date)),
+              Text(fmtDateHuman(d.date)),
               Text('\$${d.amount.toStringAsFixed(4)}'),
             ],
           ),
@@ -1562,15 +1534,15 @@ class _PricesTab extends StatelessWidget {
     final theme = Theme.of(context);
     final valid = closes.map((c) => c.close).whereType<double>().toList();
     final mean = valid.isEmpty
-        ? 0
+        ? 0.0
         : valid.reduce((a, b) => a + b) / valid.length;
-    final hi = valid.isEmpty ? 0 : valid.reduce((a, b) => a > b ? a : b);
-    final lo = valid.isEmpty ? 0 : valid.reduce((a, b) => a < b ? a : b);
+    final hi = valid.isEmpty ? 0.0 : valid.reduce((a, b) => a > b ? a : b);
+    final lo = valid.isEmpty ? 0.0 : valid.reduce((a, b) => a < b ? a : b);
     final last = closes.first.date;
     final first = closes.last.date;
     final pctChange = (valid.length >= 2)
         ? (valid.first - valid.last) / valid.last * 100
-        : 0;
+        : 0.0;
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: closes.length + 2,
@@ -1585,17 +1557,28 @@ class _PricesTab extends StatelessWidget {
                 Text(r.ticker, style: theme.textTheme.titleLarge),
                 const SizedBox(height: 4),
                 Text(
-                  '${closes.length} daily closes • '
-                  '${_fmtDate(first)} → ${_fmtDate(last)}',
-                  style: theme.textTheme.bodyMedium,
+                  '${closes.length} daily closes · '
+                  '${_fmtMonthYear(first)} – ${_fmtMonthYear(last)}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-                Text(
-                  'Current \$${r.currentPrice.toStringAsFixed(2)} • '
-                  'mean \$${mean.toStringAsFixed(2)} • '
-                  'range \$${lo.toStringAsFixed(2)}–\$${hi.toStringAsFixed(2)} • '
-                  '12mo Δ ${pctChange >= 0 ? '+' : ''}'
-                  '${pctChange.toStringAsFixed(2)}%',
-                  style: theme.textTheme.bodyMedium,
+                const SizedBox(height: 12),
+                _StmtRow(label: 'Current price', value: _money(r.currentPrice)),
+                _StmtRow(
+                  label: '12-month change',
+                  value: _signedPct(pctChange / 100),
+                  valueColor: _signColor(pctChange),
+                ),
+                _StmtRow(
+                  label: 'Average close',
+                  value: _money(mean),
+                  nested: true,
+                ),
+                _StmtRow(
+                  label: 'Range',
+                  value: '${_money(lo)} – ${_money(hi)}',
+                  nested: true,
                 ),
               ],
             ),
@@ -1614,7 +1597,7 @@ class _PricesTab extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  'Close',
+                  'Closing price',
                   style: theme.textTheme.labelLarge?.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
@@ -1629,7 +1612,7 @@ class _PricesTab extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_fmtDate(c.date)),
+              Text(fmtDateHuman(c.date)),
               Text(c.close == null ? '—' : '\$${c.close!.toStringAsFixed(2)}'),
             ],
           ),

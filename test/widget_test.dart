@@ -236,6 +236,8 @@ void main() {
       expect(find.text('After-tax yield'), findsOneWidget);
       expect(find.text('Advertised yield'), findsWidgets);
       expect(find.textContaining('TTM distributions'), findsWidgets);
+      // The card is stamped with when it was fetched.
+      expect(find.textContaining('As of'), findsOneWidget);
     });
 
     testWidgets('Distributions tab lists payouts after Calculate', (
@@ -266,9 +268,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Date'), findsOneWidget);
-      expect(find.text('Amount'), findsWidgets); // summary + column header
+      expect(find.text('Amount'), findsOneWidget); // column header only now
       expect(find.text('Total (12mo)'), findsOneWidget);
-      expect(find.textContaining('2 distributions'), findsOneWidget);
+      expect(find.textContaining('2 payouts'), findsOneWidget);
+      // Summary uses the Calculate-tab labeled rows.
+      expect(find.text('Total distributions'), findsOneWidget);
+      expect(find.text('Average per payout'), findsOneWidget);
+      expect(find.textContaining('Return of capital'), findsOneWidget);
       // Footer total = $1 + $2 = $3.0000.
       expect(find.text('\$3.0000'), findsWidgets);
     });
@@ -298,8 +304,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Date'), findsOneWidget);
-      expect(find.text('Close'), findsOneWidget);
-      expect(find.textContaining('mean'), findsOneWidget);
+      expect(find.text('Closing price'), findsOneWidget);
+      expect(find.text('Current price'), findsOneWidget);
+      expect(find.text('12-month change'), findsOneWidget);
+      expect(find.text('Average close'), findsOneWidget);
       expect(find.text('—'), findsWidgets); // null close bar(s) show an em-dash
     });
 
