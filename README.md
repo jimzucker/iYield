@@ -4,7 +4,7 @@
 
 # TrueYield
 
-[![CI](https://github.com/jimzucker/iYield/actions/workflows/ci.yml/badge.svg)](https://github.com/jimzucker/iYield/actions/workflows/ci.yml)
+[![CI](https://github.com/jimzucker/TrueYield/actions/workflows/ci.yml/badge.svg)](https://github.com/jimzucker/TrueYield/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 **Know what a dividend stock or ETF actually pays you — after taxes, and after the share price moves.**
@@ -25,8 +25,6 @@ TrueYield is a mobile app that takes a ticker and your marginal tax rates and an
 <td><img src="docs/screenshots/prices.png" alt="Prices tab listing daily closes"/></td>
 </tr>
 </table>
-
-> Note: the screenshots above are from an earlier build and don't yet show the return-of-capital / total-return layout described below; they'll be refreshed from the simulator.
 
 ## Why TrueYield
 
@@ -104,7 +102,7 @@ flutter test
   git config core.hooksPath .githooks
   ```
 
-The test suite covers the broker-DRIP / return-of-capital math (flat-price baseline, the ROC income split, price-drop and price-rise total return, distribution ordering, and daily-bar YMAG/TQQQ fixtures verified against the Python reference in [`tools/yield_ref.py`](./tools/yield_ref.py)), the Yahoo response parser and each of its error branches, the no-distribution and null-price edge cases, and the app's tab rendering, input validation (including the return-of-capital range), and saved-input restoration.
+The test suite covers the broker-DRIP / return-of-capital math (flat-price baseline, the ROC income split, price-drop and price-rise total return, distribution ordering, and daily-bar YMAG/TQQQ fixtures verified against the Python reference in [`tools/yield_ref.py`](./tools/yield_ref.py)), the Yahoo response parser and each of its error branches, the no-distribution and null-price edge cases, the web-only CORS-proxy routing (native targets always call Yahoo directly), and the app's tab rendering, input validation (including the return-of-capital range), and saved-input restoration.
 
 See [SESSION_LOG.md](./SESSION_LOG.md) for the project's iteration history.
 

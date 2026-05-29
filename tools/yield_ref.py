@@ -124,7 +124,7 @@ def main():
     roc_by_ticker = {"YMAG": 71.0, "TQQQ": 0.0}
     rows = []
     for t in ("YMAG", "TQQQ"):
-        fx = load_fixture(f"/tmp/iyield_fixtures/{t}.json")
+        fx = load_fixture(f"/tmp/trueyield_fixtures/{t}.json")
         out = compute(
             ticker=fx["ticker"],
             current_price=fx["currentPrice"],
